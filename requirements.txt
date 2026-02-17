@@ -1,0 +1,12 @@
+pymupdf
+pytesseract
+pdf2image
+opencv-python
+regex
+pydantic
+python-dotenv
+rich
+typer
+numpy
+pytest
+ruff

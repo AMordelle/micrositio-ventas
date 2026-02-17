@@ -1,0 +1,107 @@
+Asistente de contenido - BizaTVer
+https://chatgpt.com/g/g-6983d1cf1dc881918f549bb5d237bfc4-asistente-de-contenido-bizatver
+
+https://gsp.natura.com/login?country=MX
+
+
+6081227
+Pr10021826.
+
+Vive la emoción de los grandes momentos desde casa.
+Conectado, cómodo y acompañado.
+¿List@ para disfrutarlo a tu manera? Escríbenos.
+
+/src/routes/+layout.svelte
+/src/routes/+page.svelte
+/src/routes/carrito/+page.svelte
+/src/lib/stores/cart.js
+/src/lib/stores/filters.js
+/src/lib/components/Header.svelte
+/src/lib/components/SearchBar.svelte
+/src/lib/components/ProductCard.svelte
+/src/lib/components/Filters.svelte
+/src/lib/components/FloatingWhatsApp.svelte
+/src/lib/components/CartFloating.svelte
+/static/data/catalogo.json
+/src/app.css
+/svelte.config.js
+/vite.config.js
+/package.json
+
+Continuemos con el proyecto Micrositio de ventas. Este chat es continuación directa del proceso anterior donde ya corregimos SSR, hidratación, clics y reactividad. Estamos trabajando sobre la última versión funcional del micrositio y quiero seguir desarrollando nuevas mejoras/refactorizaciones. Continuemos con el proyecto Micrositio de ventas; retomemos desde la última versión funcional que preparamos.
+Continuemos con el proyecto Micrositio de Ventas. Ya subí la versión actualizada del proyecto y quiero seguir trabajando en corregir algunos detalles de la barra de búsqueda. De ahora en adelante, cada vez que modifiquemos el proyecto, vamos a subir los archivos actualizados.
+
+
+https://natura-auth.prd.naturacloud.com/?company=natura&client_id=3ec6rhfe52b2k78h32kv7ml6ti&redirect_uri=https://gsp.natura.com&country=MX&language=es
+https://gsp.natura.com/showcase/natura
+
+
+from pipeline.extract.extract_pipeline import extract_pdf
+from pipeline.clean.clean_pipeline import clean_page_text
+
+data = extract_pdf("input_pdfs/Natura16LB.pdf")
+page7_raw = data[7]
+
+print("\n--- TEXTO CRUD0 ---\n")
+print(page7_raw)
+
+print("\n--- TEXTO LIMPIO (BLOQUES) ---\n")
+blocks = clean_page_text(page7_raw)
+for b in blocks:
+    print("•", b)
+
+
+from pipeline.extract.extract_pipeline import extract_pdf
+from pipeline.clean.clean_pipeline import clean_page_text
+
+data = extract_pdf("input_pdfs/Natura16LB.pdf")
+page7 = data[7]
+
+blocks = clean_page_text(page7)
+
+print("\n--- BLOQUES LIMPIOS ---\n")
+for b in blocks:
+    print("•", b[:80], "...")
+
+
+from pipeline.extract.extract_pipeline import extract_pdf
+from pipeline.clean.clean_pipeline import clean_page_text
+
+data = extract_pdf("input_pdfs/AvonBelleza16LB.pdf")
+
+for page_num in [60, 61, 62, 63]:
+    print(f"\n=== Página {page_num} ===\n")
+    blocks = clean_page_text(data[page_num])
+    
+    for b in blocks:
+        print("•", b, "\n")
+
+
+
+🧪 Siguiente paso tras ejecutar
+
+Apenas termines de correr el script, envíame cualquiera de estos:
+
+El número total de productos extraídos por catálogo
+
+O parte del JSON generado
+
+O errores que aparezcan en consola
+
+O un catálogo específico con problemas
+
+Con eso podemos:
+
+Afinar reglas
+
+Ajustar los parsers
+
+Mejorar SKU detection
+
+Pulir TONES_LIST (normalmente el más complejo)
+
+Corregir falsos positivos del classifier
+
+Estamos a un paso de tener el pipeline profesional completo.
+
+Cuando estés listo, ejecútalo y tráeme los resultados.
