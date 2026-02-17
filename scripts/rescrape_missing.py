@@ -4,21 +4,11 @@
 import json
 import time
 import random
+import argparse
 from pathlib import Path
 from typing import Dict, List, Any
 
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
-
-# -----------------------------
-# CONFIG
-# -----------------------------
-CICLO = "202517"
-
-CATALOGO_FILE = Path(f"output/data/catalogo_{CICLO}.json")
-MISSING_FILE = Path(f"output/data/missing_{CICLO}.json")
-
-CATALOGO_FINAL = Path(f"output/data/catalogo_{CICLO}_final.json")
-MISSING_FINAL = Path(f"output/data/missing_{CICLO}_final.json")
 
 # -----------------------------
 # HELPERS reutilizados del scraper
@@ -56,7 +46,65 @@ def parse_price(text: str) -> float | None:
     return float(num)
 
 
-def extract_card_from_page(page, sku: str) -> Dict[str, Any] | None:
+def _extract_prices_from_text(text: str) -> List[float]:
+    matches = re.findall(r"\d[0-9\.,]*\d", text or "")
+    prices: List[float] = []
+    for candidate in matches:
+        parsed = parse_price(candidate)
+        if parsed is not None:
+            prices.append(parsed)
+    return prices
+
+
+def derive_sale_prices(price_values: List[float]) -> Dict[str, float | None]:
+    unique: List[float] = []
+    for val in price_values:
+        if val not in unique:
+            unique.append(val)
+
+    regular = unique[0] if unique else None
+    promo = unique[-1] if len(unique) > 1 else None
+    final = promo if promo is not None else regular
+
+    return {
+        "price_sale_regular": regular,
+        "price_sale_promo": promo,
+        "price_sale_final": final,
+        "price_sale": final,
+    }
+
+
+def extract_sale_prices(card, sku: str) -> Dict[str, float | None]:
+    resale_block = card.locator(f"[data-testid='resalePrice-{sku}']")
+    if resale_block.count() == 0:
+        return {
+            "price_sale_regular": None,
+            "price_sale_promo": None,
+            "price_sale_final": None,
+            "price_sale": None,
+        }
+
+    try:
+        text_nodes = resale_block.locator("p").all_inner_texts()
+        if not text_nodes:
+            text_nodes = [resale_block.inner_text()]
+    except:
+        text_nodes = []
+
+    parsed_prices: List[float] = []
+    for txt in text_nodes:
+        parsed_prices.extend(_extract_prices_from_text(txt))
+
+    if not parsed_prices:
+        try:
+            parsed_prices = _extract_prices_from_text(resale_block.inner_text())
+        except:
+            parsed_prices = []
+
+    return derive_sale_prices(parsed_prices)
+
+
+def extract_card_from_page(page, sku: str, ciclo: str) -> Dict[str, Any] | None:
     card = page.locator(f'[data-testid="card-{sku}"]')
     if card.count() == 0:
         return None
@@ -86,18 +134,21 @@ def extract_card_from_page(page, sku: str) -> Dict[str, Any] | None:
     except:
         price_purchase = None
 
-    try:
-        resale_block = card.locator(f"[data-testid='resalePrice-{sku}']")
-        price_sale = parse_price(resale_block.inner_text())
-    except:
-        price_sale = None
+    sale_prices = extract_sale_prices(card, sku)
 
     try:
         image_url = card.locator("[data-testid='card-header-image'] img").get_attribute("src")
     except:
         image_url = None
 
-    print(f"     ✔ {name} | Compra: {price_purchase} | Venta: {price_sale} | Pts: {points}")
+    print(
+        "     ✔ "
+        f"{name} | Compra: {price_purchase} | "
+        f"Venta regular: {sale_prices['price_sale_regular']} | "
+        f"Promo: {sale_prices['price_sale_promo']} | "
+        f"Final: {sale_prices['price_sale_final']} | "
+        f"Pts: {points}"
+    )
 
     return {
         "brand": brand,
@@ -105,9 +156,9 @@ def extract_card_from_page(page, sku: str) -> Dict[str, Any] | None:
         "name": name,
         "points": points,
         "price_purchase": price_purchase,
-        "price_sale": price_sale,
+        **sale_prices,
         "image_url": image_url,
-        "cycle": CICLO
+        "cycle": ciclo
     }
 
 
@@ -153,12 +204,22 @@ def search_and_open(page, sku: str) -> bool:
 # MAIN
 # -----------------------------
 def main():
-    print("\n🔁 RESCRAPER — SEGUNDA VUELTA")
-    print(f"📄 Leyendo catálogo: {CATALOGO_FILE}")
-    print(f"📄 Leyendo missing:  {MISSING_FILE}")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--cycle", required=True, help="Ciclo actual (ej. 202517)")
+    args = parser.parse_args()
 
-    catalogo = {item["sku"]: item for item in json.loads(CATALOGO_FILE.read_text("utf-8"))}
-    missing = json.loads(MISSING_FILE.read_text("utf-8"))
+    ciclo = args.cycle
+    catalogo_file = Path(f"output/data/catalogo_{ciclo}.json")
+    missing_file = Path(f"output/data/missing_{ciclo}.json")
+    catalogo_final = Path(f"output/data/catalogo_{ciclo}_final.json")
+    missing_final = Path(f"output/data/missing_{ciclo}_final.json")
+
+    print("\n🔁 RESCRAPER — SEGUNDA VUELTA")
+    print(f"📄 Leyendo catálogo: {catalogo_file}")
+    print(f"📄 Leyendo missing:  {missing_file}")
+
+    catalogo = {item["sku"]: item for item in json.loads(catalogo_file.read_text("utf-8"))}
+    missing = json.loads(missing_file.read_text("utf-8"))
 
     print(f"📦 Productos actuales: {len(catalogo)}")
     print(f"❗ SKUs faltantes a revisar: {len(missing)}")
@@ -195,7 +256,7 @@ def main():
 
                 ok = search_and_open(page, sku)
                 if ok:
-                    data = extract_card_from_page(page, sku)
+                    data = extract_card_from_page(page, sku, ciclo)
                     if data:
                         catalogo[sku] = data
                         found = True
@@ -211,13 +272,13 @@ def main():
 
     # guardar resultados
     catalogo_list = list(catalogo.values())
-    CATALOGO_FINAL.write_text(json.dumps(catalogo_list, indent=2, ensure_ascii=False), encoding="utf-8")
-    MISSING_FINAL.write_text(json.dumps(still_missing, indent=2, ensure_ascii=False), encoding="utf-8")
+    catalogo_final.write_text(json.dumps(catalogo_list, indent=2, ensure_ascii=False), encoding="utf-8")
+    missing_final.write_text(json.dumps(still_missing, indent=2, ensure_ascii=False), encoding="utf-8")
 
     print("\n====================================")
     print("   🟢 RESCRAPER FINALIZADO")
-    print(f"   ✔ Total productos: {len(catalogo_list)} → {CATALOGO_FINAL}")
-    print(f"   ❗ SKUs aún faltantes: {len(still_missing)} → {MISSING_FINAL}")
+    print(f"   ✔ Total productos: {len(catalogo_list)} → {catalogo_final}")
+    print(f"   ❗ SKUs aún faltantes: {len(still_missing)} → {missing_final}")
     print("====================================\n")
 
 
