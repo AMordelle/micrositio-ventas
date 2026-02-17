@@ -35,3 +35,32 @@ node_modules/
 # SvelteKit
 .svelte-kit/
 micrositio/.svelte-kit/
+# Entorno virtual
+venv/
+
+# Archivos de Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Archivos temporales
+*.log
+*.tmp
+*.temp
+
+# Configuración del editor
+.vscode/
+.idea/
+
+# Variables de entorno
+.env
+
+# Archivos de salida
+dist/
+build/
+output/
+
+# Archivos de sistema
+.DS_Store
+Thumbs.db
