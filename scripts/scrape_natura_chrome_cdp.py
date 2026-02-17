@@ -74,6 +74,65 @@ def detect_session_lost(page, sku=None) -> bool:
 
     return False
 
+
+def _extract_prices_from_text(text: str) -> List[float]:
+    matches = re.findall(r"\d[0-9\.,]*\d", text or "")
+    prices: List[float] = []
+    for candidate in matches:
+        parsed = parse_price(candidate)
+        if parsed is not None:
+            prices.append(parsed)
+    return prices
+
+
+def derive_sale_prices(price_values: List[float]) -> Dict[str, float | None]:
+    unique: List[float] = []
+    for val in price_values:
+        if val not in unique:
+            unique.append(val)
+
+    regular = unique[0] if unique else None
+    promo = unique[-1] if len(unique) > 1 else None
+    final = promo if promo is not None else regular
+
+    return {
+        "price_sale_regular": regular,
+        "price_sale_promo": promo,
+        "price_sale_final": final,
+        # compatibilidad con consumidores actuales
+        "price_sale": final,
+    }
+
+
+def extract_sale_prices(card, sku: str) -> Dict[str, float | None]:
+    resale_block = card.locator(f"[data-testid='resalePrice-{sku}']")
+    if resale_block.count() == 0:
+        return {
+            "price_sale_regular": None,
+            "price_sale_promo": None,
+            "price_sale_final": None,
+            "price_sale": None,
+        }
+
+    try:
+        text_nodes = resale_block.locator("p").all_inner_texts()
+        if not text_nodes:
+            text_nodes = [resale_block.inner_text()]
+    except:
+        text_nodes = []
+
+    parsed_prices: List[float] = []
+    for txt in text_nodes:
+        parsed_prices.extend(_extract_prices_from_text(txt))
+
+    if not parsed_prices:
+        try:
+            parsed_prices = _extract_prices_from_text(resale_block.inner_text())
+        except:
+            parsed_prices = []
+
+    return derive_sale_prices(parsed_prices)
+
 # ======================================================
 # BÚSQUEDA + TARJETA
 # ======================================================
@@ -151,18 +210,21 @@ def extract_card(page, sku: str, ciclo: str) -> Dict[str, Any] | None:
     except:
         price_purchase = None
 
-    try:
-        r_b = card.locator(f"[data-testid='resalePrice-{sku}']")
-        price_sale = parse_price(r_b.inner_text())
-    except:
-        price_sale = None
+    sale_prices = extract_sale_prices(card, sku)
 
     try:
         image_url = card.locator("[data-testid='card-header-image'] img").get_attribute("src")
     except:
         image_url = None
 
-    print(f"  ✔ {name} | Compra: {price_purchase} | Venta: {price_sale} | Pts: {points}")
+    print(
+        "  ✔ "
+        f"{name} | Compra: {price_purchase} | "
+        f"Venta regular: {sale_prices['price_sale_regular']} | "
+        f"Promo: {sale_prices['price_sale_promo']} | "
+        f"Final: {sale_prices['price_sale_final']} | "
+        f"Pts: {points}"
+    )
 
     return {
         "brand": brand,
@@ -170,7 +232,7 @@ def extract_card(page, sku: str, ciclo: str) -> Dict[str, Any] | None:
         "name": name,
         "points": points,
         "price_purchase": price_purchase,
-        "price_sale": price_sale,
+        **sale_prices,
         "image_url": image_url,
         "cycle": ciclo,
     }
@@ -207,6 +269,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", required=True, help="Archivo all_skus_<ciclo>.json")
     parser.add_argument("--cycle", required=True, help="Ciclo actual: 202518")
+    parser.add_argument("--sku", help="Procesa únicamente un SKU específico (opcional)")
+    parser.add_argument("--limit", type=int, help="Limita el número de SKUs a procesar (opcional)")
     args = parser.parse_args()
 
     ciclo = args.cycle
@@ -227,6 +291,12 @@ def main():
     missing = load_existing(missing_file)
 
     remaining = [sku for sku in skus if sku not in resultados and sku not in missing]
+
+    if args.sku:
+        remaining = [sku for sku in remaining if str(sku) == str(args.sku)]
+
+    if args.limit is not None:
+        remaining = remaining[: args.limit]
     print(f"▶ Restantes por scrapear: {len(remaining)}")
 
     with sync_playwright() as p:
