@@ -6,8 +6,19 @@
   // Cantidad local de la tarjeta
   let qty = 1;
 
-  // Precio de venta seguro (fallback si algún producto viene raro)
-  $: priceSale = product?.price_sale ?? product?.price_purchase ?? 0;
+  function toSafeNumber(value) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  // Precios de venta seguros con compatibilidad para productos antiguos
+  $: priceFinal = toSafeNumber(product?.price_sale_final) ?? toSafeNumber(product?.price_sale) ?? 0;
+  $: priceRegular = toSafeNumber(product?.price_sale_regular);
+
+  $: hasPromo = priceRegular !== null && priceRegular > 0 && priceFinal > 0 && priceFinal < priceRegular;
+  $: discountPercent = hasPromo
+    ? Math.round(((priceRegular - priceFinal) / priceRegular) * 100)
+    : 0;
 
   function inc() {
     qty = Math.min(qty + 1, 99);
@@ -37,9 +48,17 @@
     </div>
 
     <div class="bottom">
-      <p class="price">
-        ${priceSale.toFixed(2)}
-      </p>
+      {#if hasPromo}
+        <div class="price-wrap">
+          <span class="discount-badge" aria-label={`Descuento del ${discountPercent}%`}>
+            -{discountPercent}%
+          </span>
+          <p class="price-regular">${priceRegular.toFixed(2)}</p>
+          <p class="price-final">${priceFinal.toFixed(2)}</p>
+        </div>
+      {:else}
+        <p class="price-final">${priceFinal.toFixed(2)}</p>
+      {/if}
 
       <div class="actions">
         <div class="qty">
@@ -123,11 +142,40 @@
     margin-top: 8px;
   }
 
-  .price {
+  .price-wrap {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+    margin-bottom: 6px;
+  }
+
+  .discount-badge {
+    background: #df4b44;
+    color: #ffffff;
+    font-size: 0.68rem;
+    font-weight: 700;
+    border-radius: 999px;
+    padding: 2px 8px;
+    line-height: 1.3;
+  }
+
+  .price-regular {
+    margin: 0;
+    font-size: 0.78rem;
+    color: #9a8a80;
+    text-decoration: line-through;
+  }
+
+  .price-final {
     margin: 0 0 6px;
     font-size: 1rem;
     font-weight: 700;
     color: #3b2418;
+  }
+
+  .price-wrap .price-final {
+    margin: 0;
   }
 
   .actions {
