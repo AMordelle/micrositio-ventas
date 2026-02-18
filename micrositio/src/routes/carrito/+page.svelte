@@ -30,7 +30,7 @@
     let mensaje = "¡Hola! Me gustaría hacer un pedido:%0A%0A";
 
     for (const item of items) {
-      mensaje += `• ${item.name} (SKU ${item.sku})%0A  Cantidad: ${item.qty}%0A  Subtotal: $${(
+      mensaje += `• ${item.name} (SKU ${item.sku})%0A  Cantidad: ${item.qty}%0A  Precio unitario: $${item.price_sale.toFixed(2)}%0A  Subtotal: $${(
         item.qty * item.price_sale
       ).toFixed(2)}%0A%0A`;
     }
