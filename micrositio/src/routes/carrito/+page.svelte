@@ -26,6 +26,14 @@
   function enviarWhatsApp() {
     if (!items.length) return;
 
+    const numero = import.meta.env.PUBLIC_WHATSAPP_NUMBER;
+
+    if (!numero) {
+      console.warn("PUBLIC_WHATSAPP_NUMBER no está configurada.");
+      alert("El servicio de WhatsApp no está disponible temporalmente. Intenta más tarde.");
+      return;
+    }
+
     let mensaje = "¡Hola! Me gustaría hacer un pedido:%0A%0A";
 
     for (const item of items) {
@@ -35,8 +43,6 @@
     }
 
     mensaje += `TOTAL: $${total.toFixed(2)}%0A¿Está disponible?`;
-
-    const numero = "521##########";
     window.open(`https://wa.me/${numero}?text=${mensaje}`, "_blank");
   }
 </script>
