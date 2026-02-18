@@ -34,6 +34,12 @@
 </script>
 
 <article class="card">
+  {#if hasPromo}
+    <span class="discount-badge" aria-label={`Descuento del ${discountPercent}%`}>
+      -{discountPercent}%
+    </span>
+  {/if}
+
   <!-- Imagen -->
   <div class="image-wrap">
     <img src={product.image_url} alt={product.name} loading="lazy" />
@@ -50,9 +56,6 @@
     <div class="bottom">
       {#if hasPromo}
         <div class="price-wrap">
-          <span class="discount-badge" aria-label={`Descuento del ${discountPercent}%`}>
-            -{discountPercent}%
-          </span>
           <p class="price-regular">${priceRegular.toFixed(2)}</p>
           <p class="price-final">${priceFinal.toFixed(2)}</p>
         </div>
@@ -77,6 +80,7 @@
 
 <style>
   .card {
+    position: relative;
     background: #ffffff;
     border-radius: 18px;
     border: 1px solid #f0e5de;
@@ -151,6 +155,10 @@
   }
 
   .discount-badge {
+    position: absolute;
+    top: 10px;
+    left: 10px;
+    z-index: 2;
     background: #df4b44;
     color: #ffffff;
     font-size: 0.68rem;
