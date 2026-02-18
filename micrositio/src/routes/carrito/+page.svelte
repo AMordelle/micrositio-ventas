@@ -1,4 +1,5 @@
 <script>
+  import { PUBLIC_WHATSAPP_NUMBER } from "$env/static/public";
   import {
     cart,
     cartTotal,
@@ -36,7 +37,16 @@
 
     mensaje += `TOTAL: $${total.toFixed(2)}%0A¿Está disponible?`;
 
-    const numero = "521##########";
+    const numero = PUBLIC_WHATSAPP_NUMBER;
+
+    if (!numero) {
+      console.warn("PUBLIC_WHATSAPP_NUMBER no está configurada");
+      alert(
+        "No se pudo abrir WhatsApp porque el número de contacto no está configurado."
+      );
+      return;
+    }
+
     window.open(`https://wa.me/${numero}?text=${mensaje}`, "_blank");
   }
 </script>
