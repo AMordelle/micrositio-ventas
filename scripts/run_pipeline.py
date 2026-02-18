@@ -6,7 +6,8 @@
 # 2) Ejecuta extractor de SKUs -> all_skus_<ciclo>.json
 # 3) Ejecuta scraper principal (Chrome CDP) -> catalogo_<ciclo>.json + missing_<ciclo>.json
 # 4) Ejecuta rescraper automático -> catalogo_<ciclo>_final.json + missing_<ciclo>_final.json
-# 5) Reporte final del catálogo completo y productos faltantes
+# 5) Extrae promociones de PDF y aplica overwrite seguro de precios de venta
+# 6) Reporte final del catálogo completo y productos faltantes
 
 import sys
 import subprocess
@@ -47,7 +48,7 @@ def ask_cycle_if_needed(cli_cycle: str | None) -> str:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Pipeline completo: SKUs -> Scraping -> Rescraping -> Catálogo Final"
+        description="Pipeline completo: SKUs -> Scraping -> Rescraping -> Promos PDF -> Catálogo Final"
     )
     parser.add_argument("--cycle", help="Ciclo actual (ej. 202517).")
     args = parser.parse_args()
@@ -62,12 +63,16 @@ def main():
     extractor_script = SCRIPTS_DIR / "extract_all_skus.py"
     scraper_script = SCRIPTS_DIR / "scrape_natura_chrome_cdp.py"
     rescraper_script = SCRIPTS_DIR / "rescrape_missing.py"
+    extract_promos_script = SCRIPTS_DIR / "extract_pdf_promos.py"
+    apply_promos_script = SCRIPTS_DIR / "apply_pdf_promos.py"
 
     skus_file = OUTPUT_SKUS_DIR / f"all_skus_{ciclo}.json"
     catalog_file = OUTPUT_DATA_DIR / f"catalogo_{ciclo}.json"
     missing_file = OUTPUT_DATA_DIR / f"missing_{ciclo}.json"
     final_catalog_file = OUTPUT_DATA_DIR / f"catalogo_{ciclo}_final.json"
+    final_catalog_with_pdf_file = OUTPUT_DATA_DIR / f"catalogo_{ciclo}_final_with_pdf.json"
     final_missing_file = OUTPUT_DATA_DIR / f"missing_{ciclo}_final.json"
+    promos_from_pdf_file = OUTPUT_DATA_DIR / f"promos_from_pdf_{ciclo}.json"
 
     print("\n📁 Proyecto:", ROOT)
     print("📁 Scripts:", SCRIPTS_DIR)
@@ -130,6 +135,43 @@ def main():
     if not final_catalog_file.exists():
         raise FileNotFoundError(f"No existe {final_catalog_file}. El rescrape falló.")
 
+    # 4️⃣ EXTRAER PROMOS DESDE PDF + APLICAR OVERRIDE
+    run_step(
+        "4️⃣ Extrayendo promociones desde PDFs (extract_pdf_promos.py)",
+        [
+            sys.executable,
+            str(extract_promos_script),
+            "--cycle",
+            ciclo,
+            "--out",
+            str(promos_from_pdf_file),
+        ],
+    )
+
+    if not promos_from_pdf_file.exists():
+        raise FileNotFoundError(f"No existe {promos_from_pdf_file}. La extracción de promos falló.")
+
+    run_step(
+        "5️⃣ Aplicando promociones PDF sobre catálogo final (apply_pdf_promos.py)",
+        [
+            sys.executable,
+            str(apply_promos_script),
+            "--cycle",
+            ciclo,
+            "--promos",
+            str(promos_from_pdf_file),
+            "--catalog-in",
+            str(final_catalog_file),
+            "--out",
+            str(final_catalog_with_pdf_file),
+        ],
+    )
+
+    if not final_catalog_with_pdf_file.exists():
+        raise FileNotFoundError(
+            f"No existe {final_catalog_with_pdf_file}. La aplicación de promos falló."
+        )
+
     # 🎉 RESUMEN FINAL
     print("\n🎉 PIPELINE COMPLETADO EXITOSAMENTE")
     print("===============================================================")
@@ -139,6 +181,8 @@ def main():
     print(f"📄 Missing (1ª vuelta):         {missing_file}")
     print(f"📄 Catálogo FINAL (2 vueltas):  {final_catalog_file}")
     print(f"📄 Missing FINAL:               {final_missing_file}")
+    print(f"📄 Promos desde PDF:            {promos_from_pdf_file}")
+    print(f"📄 Catálogo FINAL + PDF:        {final_catalog_with_pdf_file}")
     print("===============================================================\n")
 
 
