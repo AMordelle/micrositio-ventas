@@ -21,3 +21,5 @@ typer
 numpy
 pytest
 ruff
+openai
+pillow
