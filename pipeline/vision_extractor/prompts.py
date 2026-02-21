@@ -19,4 +19,5 @@ REGLAS CRÍTICAS
 7) No copies editorial largo: máx 2 bullets cortos.
 
 SALIDA
-Devuelve SOLO JSON válido (sin markdown)."""
+Devuelve SOLO JSON válido (sin markdown).
+Si la página no contiene SKUs ni precios (portada/índice/editorial), devuelve { "page": <int>, "items": [] } como JSON válido."""

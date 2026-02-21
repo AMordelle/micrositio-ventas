@@ -79,13 +79,17 @@ def main() -> int:
 
         for _ in range(attempts):
             try:
-                raw_json = client.extract_page_json(image_path)
+                raw_json = client.extract_page_json(image_path=image_path, page_num=page_num)
                 parsed = _validate_page_payload(raw_json, page_num)
                 break
             except Exception as exc:  # noqa: BLE001
                 last_error = str(exc)
 
         page_json_path = page_json_dir / f"page_{page_num:04d}.json"
+
+        raw_fallback_output = ""
+        if parsed is not None:
+            raw_fallback_output = str(parsed.pop("_raw_output", ""))
 
         if parsed is None:
             error_doc = {
@@ -97,7 +101,13 @@ def main() -> int:
             error_pages.append({"page": page_num, "error": error_doc["error"]})
         else:
             page_json_path.write_text(json.dumps(parsed, ensure_ascii=False, indent=2), encoding="utf-8")
-            parsed_pages.append(parsed)
+            if "items" in parsed and isinstance(parsed["items"], list):
+                parsed_pages.append(parsed)
+                if "NON_JSON_OUTPUT_FALLBACK" in parsed.get("warnings", []) and raw_fallback_output:
+                    raw_path = page_json_dir / f"page_{page_num:04d}.raw.txt"
+                    raw_path.write_text(raw_fallback_output, encoding="utf-8")
+            else:
+                error_pages.append({"page": page_num, "error": "Vision output missing 'items' array"})
 
         if args.sleep_ms > 0:
             time.sleep(args.sleep_ms / 1000)
