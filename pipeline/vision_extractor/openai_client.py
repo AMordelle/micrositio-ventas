@@ -24,7 +24,10 @@ class VisionOpenAIClient:
                     "role": "user",
                     "content": [
                         {"type": "input_text", "text": VISION_PROMPT},
-                        {"type": "input_image", "image_base64": image_base64},
+                        {
+                            "type": "input_image",
+                            "image_url": f"data:image/png;base64,{image_base64}",
+                        },
                     ],
                 }
             ],
@@ -32,11 +35,18 @@ class VisionOpenAIClient:
 
         text_output = getattr(response, "output_text", None)
         if text_output:
-            return json.loads(text_output)
+            return self._parse_json_output(text_output)
 
         for item in getattr(response, "output", []):
             for content in getattr(item, "content", []):
                 if getattr(content, "type", "") in {"output_text", "text"}:
-                    return json.loads(content.text)
+                    return self._parse_json_output(content.text)
 
         raise ValueError("OpenAI response did not include JSON text output")
+
+    @staticmethod
+    def _parse_json_output(raw_text: str) -> dict[str, Any]:
+        try:
+            return json.loads(raw_text)
+        except json.JSONDecodeError as exc:
+            raise ValueError("OpenAI response output_text is not valid JSON") from exc
