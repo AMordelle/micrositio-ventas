@@ -51,12 +51,12 @@ Regla de expansión por SKU:
 - variant debe usar el tono/código visible (ej. "21C").
 - Si un producto/variante no tiene SKU visible, NO crear item.
 
-Regla de "Repuesto":
-- Si está marcado como "Repuesto" y no tiene badge propio:
-  - discount_badge=null
-  - prices.sale=null
-  - prices.regular=precio visible
-- Solo heredar promo si está explícitamente dentro del mismo sub-bloque con badge.
+Reglas CRÍTICAS para Repuesto:
+- Si hay una sección explícitamente rotulada como “Repuesto”, los SKUs de Repuesto SOLO pueden provenir de esa sección.
+- Está PROHIBIDO copiar o reutilizar SKUs del producto principal (no Repuesto) para construir items de Repuesto.
+- Está PROHIBIDO inventar SKUs. Si un SKU no es legible con certeza, NO generes ese item.
+- Si la sección Repuesto lista tonos/códigos (ej. 12N, 19N…), variant debe ser ese código; si no se ve, variant=null.
+- Repuesto solo hereda promoción si el badge de descuento está visible en el MISMO sub-bloque visual del repuesto; si no, discount_badge=null y sale=null.
 
 Discount badge:
 - text: EXACTO tal como aparece.
@@ -75,6 +75,17 @@ Importante:
 - Responde SOLO JSON, sin markdown.
 """.strip()
 
+RETRY_REPUESTO_SKU_MIX = (
+    "Corrige: la sección Repuesto no puede usar SKUs del producto principal. "
+    "Extrae SOLO los SKUs impresos en Repuesto. No inventes SKUs. Devuelve JSON válido."
+)
+
+RETRY_REPUESTO_VARIANT = (
+    "Corrige: en Repuesto hay SKUs con variant=null. Si el sub-bloque de Repuesto muestra "
+    "lista de tonos/códigos, llena variant con ese código explícito; si no es visible, deja null. "
+    "No inventes SKUs y devuelve JSON válido."
+)
+
 
 class VisionPhase1Client:
     def __init__(self, model: str = "gpt-4.1", timeout: float = 90.0) -> None:
@@ -84,24 +95,27 @@ class VisionPhase1Client:
         self.client = OpenAI(api_key=api_key, timeout=timeout)
         self.model = model
 
-    def _invoke(self, page_number: int, image_bytes: bytes) -> str:
+    def _invoke(self, page_number: int, image_bytes: bytes, correction: str | None = None) -> str:
         image_data_url = png_to_data_url(image_bytes)
+        content: list[dict[str, str]] = [
+            {"type": "input_text", "text": PHASE1_PROMPT},
+            {"type": "input_text", "text": f"El número de página es {page_number}."},
+        ]
+        if correction:
+            content.append({"type": "input_text", "text": correction})
+        content.append({"type": "input_image", "image_url": image_data_url, "detail": "high"})
+
         response = self.client.responses.create(
             model=self.model,
-            input=[
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "input_text", "text": PHASE1_PROMPT},
-                        {"type": "input_text", "text": f"El número de página es {page_number}."},
-                        {
-                            "type": "input_image",
-                            "image_url": image_data_url,
-                            "detail": "high",
-                        },
-                    ],
+            input=[{"role": "user", "content": content}],
+            text={
+                "format": {
+                    "type": "json_schema",
+                    "name": "page_extraction",
+                    "schema": PageExtraction.model_json_schema(),
+                    "strict": True,
                 }
-            ],
+            },
         )
 
         text = getattr(response, "output_text", None)
@@ -119,17 +133,78 @@ class VisionPhase1Client:
                 cleaned = match.group(1)
         return json.loads(cleaned)
 
+    @staticmethod
+    def _is_repuesto(title: str | None) -> bool:
+        return bool(title and "repuesto" in title.casefold())
+
+    def _repuesto_guardrail_message_from_payload(self, payload: Any) -> str | None:
+        if not isinstance(payload, dict):
+            return None
+        items = payload.get("items")
+        if not isinstance(items, list):
+            return None
+
+        non_repuesto_skus: set[str] = set()
+        repuesto_entries: list[dict[str, Any]] = []
+
+        for entry in items:
+            if not isinstance(entry, dict):
+                continue
+            sku = entry.get("sku")
+            title = entry.get("title")
+            if not isinstance(sku, str):
+                continue
+            if self._is_repuesto(title if isinstance(title, str) else None):
+                repuesto_entries.append(entry)
+            else:
+                non_repuesto_skus.add(sku)
+
+        if any(isinstance(entry.get("sku"), str) and entry["sku"] in non_repuesto_skus for entry in repuesto_entries):
+            return RETRY_REPUESTO_SKU_MIX
+
+        repuesto_null_variant = [entry for entry in repuesto_entries if entry.get("variant") is None]
+        if len(repuesto_entries) >= 2 and repuesto_null_variant:
+            return RETRY_REPUESTO_VARIANT
+
+        return None
+
+    def _repuesto_guardrail_message(self, parsed: PageExtraction) -> str | None:
+        non_repuesto_skus = {item.sku for item in parsed.items if not self._is_repuesto(item.title)}
+        repuesto_items = [item for item in parsed.items if self._is_repuesto(item.title)]
+
+        if any(item.sku in non_repuesto_skus for item in repuesto_items):
+            return RETRY_REPUESTO_SKU_MIX
+
+        repuesto_with_null_variant = [item for item in repuesto_items if item.variant is None]
+        if len(repuesto_items) >= 2 and repuesto_with_null_variant:
+            return RETRY_REPUESTO_VARIANT
+
+        return None
+
     def extract_page_with_retry(self, page_number: int, image_bytes: bytes, retries: int = 1) -> PageExtraction:
         attempts = retries + 1
         last_error: Exception | None = None
+        correction: str | None = None
 
-        for _ in range(attempts):
+        for attempt in range(attempts):
             try:
-                raw = self._invoke(page_number=page_number, image_bytes=image_bytes)
+                raw = self._invoke(page_number=page_number, image_bytes=image_bytes, correction=correction)
                 payload = self._extract_json(raw)
+                payload_guardrail = self._repuesto_guardrail_message_from_payload(payload)
+                if payload_guardrail and attempt < attempts - 1:
+                    correction = payload_guardrail
+                    continue
+
                 validated = PageExtraction.model_validate(payload)
                 if validated.page != page_number:
                     validated.page = page_number
+
+                repuesto_message = self._repuesto_guardrail_message(validated)
+                if repuesto_message and attempt < attempts - 1:
+                    correction = repuesto_message
+                    continue
+                if repuesto_message:
+                    raise ValueError(repuesto_message)
                 return validated
             except (json.JSONDecodeError, ValidationError, ValueError) as exc:
                 last_error = exc

@@ -74,3 +74,21 @@ En el ejemplo se procesan las páginas: `14,15,16,19,20`.
 ## Opción de debug
 
 - `--save-images`: guarda PNG renderizados en `output/vision/<catalog>/<cycle>/images`.
+
+## Caso Repuesto (validación específica)
+
+- Si existe sección explícita **Repuesto**, sus SKUs deben salir solo de esa sección.
+- No se pueden reutilizar SKUs del producto principal para items de Repuesto.
+- Si el guardrail detecta cruce de SKUs entre Repuesto y no-Repuesto, se invalida la página y se hace 1 retry con instrucción correctiva.
+- Si en Repuesto hay varios SKUs con `variant=null`, se hace 1 retry para intentar recuperar códigos de tono cuando sean visibles (sin inventar SKUs).
+
+Prueba recomendada (página 71):
+
+```bash
+python pipeline/vision_extractor/run_vision_extract.py \
+  --pdf input_pdfs/Natura202603.pdf \
+  --catalog natura \
+  --cycle 2026-03 \
+  --start-page 71 \
+  --end-page 71
+```
