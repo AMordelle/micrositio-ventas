@@ -10,7 +10,8 @@ REGLAS CRÍTICAS
 3) Descuento:
    - Si ves “X% de descuento” → úsalo EXACTAMENTE (no calcules).
    - Si ves “HASTA X%” → conserva "HASTA".
-   - Si NO ves % pero sí “De $X” y “A $Y” → calcula % SOLO en este caso (style="calculated").
+   - Si hay un badge visible con texto (MÁS DEL / HASTA / X% de descuento), extrae ese texto EXACTO en discount_badge.text y percent=X. NO lo marques como calculated.
+   - Si NO ves % ni texto explícito, pero sí “De $X” y “A $Y” → calcula % SOLO en este caso (style="calculated").
 4) Precios:
    - “De $X” y “A $Y” → regular=X, sale=Y.
    - Solo un precio ($195) sin “De/A” → regular=null, sale=195, badge=null.
