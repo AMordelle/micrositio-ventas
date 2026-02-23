@@ -100,7 +100,65 @@ def test_main_counts_empty_items_page_as_ok_and_writes_raw(monkeypatch, tmp_path
     page_doc = json.loads((out_dir / "page_json" / "page_0001.json").read_text(encoding="utf-8"))
     assert page_doc["items"] == []
     assert page_doc["warnings"] == ["NON_JSON_OUTPUT_FALLBACK"]
-    assert "_raw_output" not in page_doc
+    assert page_doc["_raw_output"] == "modelo respondió texto no json"
 
     raw = (out_dir / "page_json" / "page_0001.raw.txt").read_text(encoding="utf-8")
     assert raw == "modelo respondió texto no json"
+
+
+class _LegacyFieldsClient:
+    def __init__(self, model: str) -> None:
+        self.model = model
+
+    def extract_page_json(self, image_path: Path, page_num: int):
+        return {
+            "page": page_num,
+            "items": [
+                {
+                    "sku": 123,
+                    "title": "Demo",
+                    "regular_price": 100,
+                    "sale_price": 80,
+                    "discount_style": "calculated",
+                }
+            ],
+        }
+
+
+def test_main_normalizes_legacy_price_fields_before_merge(monkeypatch, tmp_path: Path):
+    pdf_path = tmp_path / "catalog.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4")
+
+    page_image = tmp_path / "page_0014.png"
+    page_image.write_bytes(b"png")
+
+    out_dir = tmp_path / "out2"
+
+    args = Namespace(
+        pdf=pdf_path,
+        catalog="natura",
+        cycle="c01",
+        out=out_dir,
+        dpi=200,
+        model="gpt-4.1-mini",
+        retry=0,
+        max_pages=None,
+        start_page=1,
+        end_page=None,
+        skip_pages=None,
+        sleep_ms=0,
+    )
+
+    monkeypatch.setattr(run_vision_extract, "parse_args", lambda: args)
+    monkeypatch.setattr(run_vision_extract, "get_pdf_page_count", lambda _pdf: 14)
+    monkeypatch.setattr(run_vision_extract, "convert_pdf_to_png_pages", lambda **kwargs: [(14, page_image)])
+    monkeypatch.setattr(run_vision_extract, "VisionOpenAIClient", _LegacyFieldsClient)
+
+    exit_code = run_vision_extract.main()
+
+    assert exit_code == 0
+
+    by_sku = json.loads((out_dir / "by_sku.json").read_text(encoding="utf-8"))
+    assert by_sku["123"]["price_regular"] == 100
+    assert by_sku["123"]["price_sale_final"] == 80
+    assert by_sku["123"]["discount_badge"]["style"] == "calculated"

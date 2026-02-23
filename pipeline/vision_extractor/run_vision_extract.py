@@ -10,6 +10,7 @@ if __package__ in {None, ""}:
     sys.path.append(str(Path(__file__).resolve().parents[2]))
 
 from pipeline.vision_extractor.merge_by_sku import merge_pages_by_sku
+from pipeline.vision_extractor.normalize import normalize_page_json
 from pipeline.vision_extractor.openai_client import VisionOpenAIClient
 from pipeline.vision_extractor.pdf_to_images import convert_pdf_to_png_pages, get_pdf_page_count
 
@@ -154,7 +155,7 @@ def main() -> int:
 
         raw_fallback_output = ""
         if parsed is not None:
-            raw_fallback_output = str(parsed.pop("_raw_output", ""))
+            raw_fallback_output = str(parsed.get("_raw_output", ""))
 
         if parsed is None:
             error_doc = {
@@ -177,8 +178,10 @@ def main() -> int:
         if args.sleep_ms > 0:
             time.sleep(args.sleep_ms / 1000)
 
+    normalized_pages = [normalize_page_json(page_doc) for page_doc in parsed_pages]
+
     by_sku, unmatched_items, conflicts = merge_pages_by_sku(
-        page_docs=parsed_pages,
+        page_docs=normalized_pages,
         catalog=args.catalog,
         cycle=args.cycle,
     )
