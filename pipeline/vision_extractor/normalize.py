@@ -2,6 +2,20 @@ import re
 from typing import Any
 
 
+_ITEM_KEYS = {
+    "sku",
+    "title",
+    "variant",
+    "size",
+    "prices",
+    "discount_badge",
+    "points",
+    "bullets",
+    "description",
+    "extra",
+}
+
+
 def _to_number(value: Any) -> float | int | None:
     if value is None or value == "":
         return None
@@ -15,112 +29,164 @@ def _to_number(value: Any) -> float | int | None:
             parsed = float(cleaned)
         except ValueError:
             return None
-        if parsed.is_integer():
-            return int(parsed)
-        return parsed
+        return int(parsed) if parsed.is_integer() else parsed
     return None
 
 
-def _extract_discount_text(item: dict[str, Any]) -> str | None:
-    discount_text = item.get("discount_text")
-    if isinstance(discount_text, str) and discount_text.strip():
-        return discount_text.strip()
-
-    discount = item.get("discount")
-    if isinstance(discount, str) and discount.strip():
-        candidate = discount.strip()
-        upper = candidate.upper()
-        if "%" in candidate or "MÁS DEL" in upper or "MAS DEL" in upper or "HASTA" in upper:
-            return candidate
-
+def _to_int(value: Any) -> int | None:
+    number = _to_number(value)
+    if isinstance(number, int):
+        return number
+    if isinstance(number, float) and number.is_integer():
+        return int(number)
     return None
 
 
-def _discount_badge_from_text(discount_text: str) -> dict[str, Any] | None:
-    match = re.search(r"(\d+)\s*%", discount_text)
-    if not match:
-        return None
+def _to_string_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [str(v).strip() for v in value if str(v).strip()]
+    text = str(value).strip()
+    return [text] if text else []
 
-    percent = int(match.group(1))
-    upper_text = discount_text.upper()
-    if "MAS DEL" in upper_text:
-        upper_text = upper_text.replace("MAS DEL", "MÁS DEL")
 
-    style = "upto" if ("MÁS DEL" in upper_text or "HASTA" in upper_text) else "fixed"
+def _get_price_candidates(item: dict[str, Any], key: str) -> Any:
+    prices = item.get("prices")
+    if isinstance(prices, dict) and key in prices:
+        return prices.get(key)
+
+    price_obj = item.get("price")
+    if isinstance(price_obj, dict) and key in price_obj:
+        return price_obj.get(key)
+
+    legacy_map = {
+        "regular": ["price_regular", "regular_price", "regular"],
+        "sale": ["price_sale_final", "sale_price", "sale"],
+    }
+    for legacy_key in legacy_map[key]:
+        if legacy_key in item:
+            return item.get(legacy_key)
+    return None
+
+
+def _normalize_prices(item: dict[str, Any]) -> dict[str, Any]:
+    currency = "MXN"
+    prices = item.get("prices")
+    if isinstance(prices, dict) and isinstance(prices.get("currency"), str) and prices.get("currency", "").strip():
+        currency = prices["currency"].strip()
+
     return {
-        "style": style,
-        "text": upper_text,
-        "percent": percent,
+        "currency": currency,
+        "regular": _to_number(_get_price_candidates(item, "regular")),
+        "sale": _to_number(_get_price_candidates(item, "sale")),
     }
 
 
-def _normalize_discount_badge(item: dict[str, Any], price_regular: Any, price_sale_final: Any) -> dict[str, Any] | None:
+def _extract_discount_text_and_percent(item: dict[str, Any]) -> tuple[str | None, int | None]:
     badge = item.get("discount_badge")
     if isinstance(badge, dict):
-        return badge
+        text = badge.get("text")
+        percent = _to_int(badge.get("percent"))
+        if isinstance(text, str) and text.strip():
+            if percent is None:
+                match = re.search(r"(\d+)\s*%", text)
+                percent = int(match.group(1)) if match else None
+            return text.strip(), percent
 
-    explicit_discount_text = _extract_discount_text(item)
-    if explicit_discount_text is not None:
-        explicit_badge = _discount_badge_from_text(explicit_discount_text)
-        if explicit_badge is not None:
-            return explicit_badge
+    discount_text = item.get("discount_text")
+    if isinstance(discount_text, str) and discount_text.strip():
+        match = re.search(r"(\d+)\s*%", discount_text)
+        percent = int(match.group(1)) if match else None
+        return discount_text.strip(), percent
 
-    if item.get("discount") == "calculated" or item.get("discount_style") == "calculated":
-        regular = _to_number(price_regular)
-        sale = _to_number(price_sale_final)
-        if isinstance(regular, (int, float)) and isinstance(sale, (int, float)) and regular > 0:
-            percent = round((1 - (sale / regular)) * 100)
-            return {
-                "style": "calculated",
-                "text": f"{percent}% DE DESCUENTO",
-                "percent": percent,
-            }
+    discount = item.get("discount")
+    if isinstance(discount, dict):
+        text = discount.get("text")
+        percent = _to_int(discount.get("percent"))
+        if isinstance(text, str) and text.strip():
+            if percent is None:
+                match = re.search(r"(\d+)\s*%", text)
+                percent = int(match.group(1)) if match else None
+            return text.strip(), percent
 
-    return None
+    if isinstance(discount, str) and discount.strip() and discount.strip().lower() != "calculated":
+        match = re.search(r"(\d+)\s*%", discount)
+        percent = int(match.group(1)) if match else None
+        return discount.strip(), percent
+
+    return None, None
 
 
-def normalize_item(item: dict[str, Any], page_num: int | None = None) -> dict[str, Any]:
-    price_regular = item.get("price_regular")
-    if price_regular is None:
-        price_regular = item.get("regular_price", item.get("regular"))
+def _discount_kind(text: str) -> str:
+    lowered = text.lower()
+    lowered = lowered.replace("á", "a")
+    if "mas del" in lowered:
+        return "more_than"
+    if "hasta" in lowered:
+        return "up_to"
+    if re.search(r"\d+\s*%", lowered):
+        return "exact"
+    return "exact"
 
-    price_sale_final = item.get("price_sale_final")
-    if price_sale_final is None:
-        price_sale_final = item.get("sale_price", item.get("sale"))
 
-    warnings = item.get("warnings")
-    if not isinstance(warnings, list):
-        warnings = [] if warnings in (None, "") else [str(warnings)]
-
-    discount_badge = _normalize_discount_badge(item, price_regular, price_sale_final)
-    if discount_badge is None and (item.get("discount") == "calculated" or item.get("discount_style") == "calculated"):
-        if "DISCOUNT_TEXT_MISSING" not in warnings:
-            warnings.append("DISCOUNT_TEXT_MISSING")
-
-    normalized = {
-        "sku": str(item["sku"]) if item.get("sku") not in (None, "") else None,
-        "title": item.get("title"),
-        "variant": item.get("variant"),
-        "size": item.get("size"),
-        "price_regular": _to_number(price_regular),
-        "price_sale_final": _to_number(price_sale_final),
-        "discount_badge": discount_badge,
-        "notes": item.get("notes"),
-        "warnings": warnings,
-        "trace": {"pages": [page_num]} if page_num is not None else {"pages": []},
+def _normalize_discount_badge(item: dict[str, Any]) -> dict[str, Any] | None:
+    text, percent = _extract_discount_text_and_percent(item)
+    if text is None:
+        return None
+    return {
+        "text": text,
+        "percent": percent,
+        "kind": _discount_kind(text),
     }
-    return normalized
 
 
-def normalize_page_json(page_json: dict[str, Any]) -> dict[str, Any]:
-    page_num = page_json.get("page")
-    items = page_json.get("items", [])
-    if not isinstance(items, list):
-        items = []
+def normalize_item(item: dict[str, Any]) -> dict[str, Any]:
+    extra = dict(item.get("extra", {})) if isinstance(item.get("extra"), dict) else {}
+    for key, value in item.items():
+        if key not in _ITEM_KEYS and key not in {
+            "price",
+            "price_regular",
+            "price_sale_final",
+            "regular_price",
+            "sale_price",
+            "regular",
+            "sale",
+            "discount",
+            "discount_text",
+            "warnings",
+            "notes",
+            "trace",
+        }:
+            extra[key] = value
 
-    normalized_items = [normalize_item(item, page_num=page_num) for item in items if isinstance(item, dict)]
+    sku_value = item.get("sku")
+    sku = str(sku_value) if sku_value not in (None, "") else ""
 
-    normalized_page = dict(page_json)
-    normalized_page["page"] = page_num
-    normalized_page["items"] = normalized_items
-    return normalized_page
+    return {
+        "sku": sku,
+        "title": item.get("title") if item.get("title") is not None else None,
+        "variant": item.get("variant") if item.get("variant") is not None else None,
+        "size": item.get("size") if item.get("size") is not None else None,
+        "prices": _normalize_prices(item),
+        "discount_badge": _normalize_discount_badge(item),
+        "points": _to_int(item.get("points")),
+        "bullets": _to_string_list(item.get("bullets")),
+        "description": _to_string_list(item.get("description")),
+        "extra": extra,
+    }
+
+
+def normalize_page_json(page_json: dict[str, Any], page_num: int | None = None) -> dict[str, Any]:
+    page = page_json.get("page", page_num)
+    if page is None:
+        page = page_num if page_num is not None else 0
+
+    items_raw = page_json.get("items", [])
+    if not isinstance(items_raw, list):
+        items_raw = []
+
+    return {
+        "page": int(page),
+        "items": [normalize_item(item) for item in items_raw if isinstance(item, dict)],
+    }

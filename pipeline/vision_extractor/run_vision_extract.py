@@ -146,16 +146,12 @@ def main() -> int:
         for _ in range(attempts):
             try:
                 raw_json = client.extract_page_json(image_path=image_path, page_num=page_num)
-                parsed = _validate_page_payload(raw_json, page_num)
+                parsed = normalize_page_json(_validate_page_payload(raw_json, page_num), page_num=page_num)
                 break
             except Exception as exc:  # noqa: BLE001
                 last_error = str(exc)
 
         page_json_path = page_json_dir / f"page_{page_num:04d}.json"
-
-        raw_fallback_output = ""
-        if parsed is not None:
-            raw_fallback_output = str(parsed.get("_raw_output", ""))
 
         if parsed is None:
             error_doc = {
@@ -169,19 +165,17 @@ def main() -> int:
             page_json_path.write_text(json.dumps(parsed, ensure_ascii=False, indent=2), encoding="utf-8")
             if "items" in parsed and isinstance(parsed["items"], list):
                 parsed_pages.append(parsed)
-                if "NON_JSON_OUTPUT_FALLBACK" in parsed.get("warnings", []) and raw_fallback_output:
+                if client.last_raw_output is not None:
                     raw_path = page_json_dir / f"page_{page_num:04d}.raw.txt"
-                    raw_path.write_text(raw_fallback_output, encoding="utf-8")
+                    raw_path.write_text(client.last_raw_output, encoding="utf-8")
             else:
                 error_pages.append({"page": page_num, "error": "Vision output missing 'items' array"})
 
         if args.sleep_ms > 0:
             time.sleep(args.sleep_ms / 1000)
 
-    normalized_pages = [normalize_page_json(page_doc) for page_doc in parsed_pages]
-
     by_sku, unmatched_items, conflicts = merge_pages_by_sku(
-        page_docs=normalized_pages,
+        page_docs=parsed_pages,
         catalog=args.catalog,
         cycle=args.cycle,
     )

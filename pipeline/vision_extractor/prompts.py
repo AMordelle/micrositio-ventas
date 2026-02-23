@@ -1,24 +1,34 @@
 VISION_PROMPT = """Eres un extractor VISUAL de catálogos (Natura / Avon / Casa y Estilo).
 Tu entrada es UNA imagen de una página del PDF.
 
-OBJETIVO
-Detecta la estructura visual (bloques) y genera datos POR SKU, sin mezclar información entre productos.
+Devuelve SOLO JSON válido (sin markdown ni texto adicional) y cumple EXACTAMENTE este schema:
+{
+  "page": <int>,
+  "items": [
+    {
+      "sku": "<string>",
+      "title": "<string|null>",
+      "variant": "<string|null>",
+      "size": "<string|null>",
+      "prices": { "currency": "MXN", "regular": <number|null>, "sale": <number|null> },
+      "discount_badge": { "text": "<string>", "percent": <int|null>, "kind": "more_than|up_to|exact" } | null,
+      "points": <int|null>,
+      "bullets": <string[]>,
+      "description": <string[]>,
+      "extra": <object>
+    }
+  ]
+}
 
-REGLAS CRÍTICAS
-1) Cada producto está en un BLOQUE visual. NO mezcles precios, % o textos entre bloques.
-2) SKU: número dentro de paréntesis (ej. (174494)). Si no se ve claro: sku=null y warning "SKU_UNCLEAR".
-3) Descuento:
-   - Si ves “X% de descuento” → úsalo EXACTAMENTE (no calcules).
-   - Si ves “HASTA X%” → conserva "HASTA".
-   - Si hay un badge visible con texto (MÁS DEL / HASTA / X% de descuento), extrae ese texto EXACTO en discount_badge.text y percent=X. NO lo marques como calculated.
-   - Si NO ves % ni texto explícito, pero sí “De $X” y “A $Y” → calcula % SOLO en este caso (style="calculated").
-4) Precios:
-   - “De $X” y “A $Y” → regular=X, sale=Y.
-   - Solo un precio ($195) sin “De/A” → regular=null, sale=195, badge=null.
-5) “Repuesto”: si aparece junto a un SKU, es un producto independiente.
-6) title debe ser humano y completo (no frases cortadas). size captura ml/g/“x”.
-7) No copies editorial largo: máx 2 bullets cortos.
-
-SALIDA
-Devuelve SOLO JSON válido (sin markdown).
-Si la página no contiene SKUs ni precios (portada/índice/editorial), devuelve { "page": <int>, "items": [] } como JSON válido."""
+Reglas:
+- No calcules descuentos. Solo extrae texto visible.
+- discount_badge.text debe ser literal tal como se ve en la página.
+- percent solo si aparece explícito como número en el badge; si no, null.
+- kind:
+  - "more_than" si el texto contiene "Más del"
+  - "up_to" si el texto contiene "Hasta"
+  - "exact" si contiene "X% de descuento" sin "Más del/Hasta"
+- Si no hay descuento visible: discount_badge = null.
+- Si no hay precios visibles: prices.regular = null y prices.sale = null.
+- Si no aparece moneda visible, usa currency="MXN".
+- Si la página es portada/tutorial/editorial o no hay SKUs, devuelve: {"page": <int>, "items": []}."""

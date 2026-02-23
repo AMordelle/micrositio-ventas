@@ -1,108 +1,95 @@
-from pipeline.vision_extractor.normalize import normalize_item
+from pipeline.vision_extractor.normalize import normalize_item, normalize_page_json
 
 
-def test_normalize_item_discount_calculated_only_when_no_explicit_text():
-    item = {
-        "sku": 12345,
+EXPECTED_KEYS = {
+    "sku",
+    "title",
+    "variant",
+    "size",
+    "prices",
+    "discount_badge",
+    "points",
+    "bullets",
+    "description",
+    "extra",
+}
+
+
+def test_normalize_item_schema_from_price_nested_with_badge_inside_price():
+    raw = {
+        "sku": 225606,
         "title": "Producto",
-        "regular_price": 100,
-        "sale_price": 85,
-        "discount": "calculated",
+        "price": {
+            "regular": 100,
+            "sale": 55,
+            "discount_badge": {"text": "Más del 45% de descuento", "percent": 45},
+        },
+        "discount_badge": {"text": "Más del 45% de descuento", "percent": 45},
     }
+    item = normalize_item(raw)
 
-    normalized = normalize_item(item, page_num=14)
-
-    assert normalized["sku"] == "12345"
-    assert normalized["price_regular"] == 100
-    assert normalized["price_sale_final"] == 85
-    assert normalized["discount_badge"] == {
-        "style": "calculated",
-        "text": "15% DE DESCUENTO",
-        "percent": 15,
-    }
-
-
-def test_normalize_item_from_regular_sale_without_discount():
-    item = {
-        "sku": "A-1",
-        "regular": 250,
-        "sale": 199,
-    }
-
-    normalized = normalize_item(item, page_num=15)
-
-    assert normalized["price_regular"] == 250
-    assert normalized["price_sale_final"] == 199
-    assert normalized["discount_badge"] is None
-
-
-def test_normalize_item_discount_string_mas_del():
-    item = {
-        "sku": "999",
-        "discount": "Más del 45% de descuento",
-    }
-
-    normalized = normalize_item(item, page_num=16)
-
-    assert normalized["discount_badge"] == {
-        "style": "upto",
-        "text": "MÁS DEL 45% DE DESCUENTO",
+    assert set(item.keys()) == EXPECTED_KEYS
+    assert item["sku"] == "225606"
+    assert item["prices"] == {"currency": "MXN", "regular": 100, "sale": 55}
+    assert item["discount_badge"] == {
+        "text": "Más del 45% de descuento",
         "percent": 45,
+        "kind": "more_than",
     }
 
 
-def test_normalize_item_discount_string_hasta():
-    item = {
-        "sku": "1000",
-        "discount": "Hasta 40% de descuento",
-    }
-
-    normalized = normalize_item(item, page_num=17)
-
-    assert normalized["discount_badge"] == {
-        "style": "upto",
-        "text": "HASTA 40% DE DESCUENTO",
-        "percent": 40,
-    }
-
-
-def test_normalize_item_discount_string_fixed_percent():
-    item = {
-        "sku": "1001",
-        "discount": "35% de descuento",
-    }
-
-    normalized = normalize_item(item, page_num=18)
-
-    assert normalized["discount_badge"] == {
-        "style": "fixed",
-        "text": "35% DE DESCUENTO",
-        "percent": 35,
-    }
-
-
-def test_normalize_item_prefers_explicit_text_over_calculated_flag():
-    item = {
-        "sku": "1002",
+def test_normalize_item_schema_from_regular_price_sale_price():
+    raw = {
+        "sku": "ABC",
         "regular_price": 200,
-        "sale_price": 100,
-        "discount": "Más del 45% de descuento",
-        "discount_style": "calculated",
+        "sale_price": 160,
+        "discount_badge": {"text": "Hasta 40% de descuento", "percent": 40},
+    }
+    item = normalize_item(raw)
+
+    assert set(item.keys()) == EXPECTED_KEYS
+    assert item["prices"] == {"currency": "MXN", "regular": 200, "sale": 160}
+    assert item["discount_badge"]["kind"] == "up_to"
+
+
+def test_normalize_item_schema_from_regular_sale_root_and_discount_object():
+    raw = {
+        "sku": "XYZ",
+        "regular": 300,
+        "sale": 240,
+        "discount": {"text": "35% de descuento", "percent": 35},
+    }
+    item = normalize_item(raw)
+
+    assert set(item.keys()) == EXPECTED_KEYS
+    assert item["prices"] == {"currency": "MXN", "regular": 300, "sale": 240}
+    assert item["discount_badge"] == {
+        "text": "35% de descuento",
+        "percent": 35,
+        "kind": "exact",
     }
 
-    normalized = normalize_item(item, page_num=19)
 
-    assert normalized["discount_badge"]["style"] == "upto"
-    assert normalized["discount_badge"]["percent"] == 45
-
-
-def test_normalize_item_adds_warning_when_calculated_without_prices():
-    item = {
-        "sku": "1003",
-        "discount": "calculated",
+def test_normalize_page_json_exact_schema_for_all_items():
+    raw_page = {
+        "page": 14,
+        "items": [
+            {"sku": 1, "regular_price": 10, "sale_price": 8},
+            {"sku": 2, "prices": {"regular": 20, "sale": 18}},
+            {"sku": 3, "regular": 30, "sale": 25, "discount": "Hasta 20% de descuento"},
+        ],
     }
 
-    normalized = normalize_item(item, page_num=20)
+    page = normalize_page_json(raw_page)
+    assert set(page.keys()) == {"page", "items"}
+    assert page["page"] == 14
+    for item in page["items"]:
+        assert set(item.keys()) == EXPECTED_KEYS
+        assert set(item["prices"].keys()) == {"currency", "regular", "sale"}
+        assert item["prices"]["currency"] == "MXN"
 
-    assert normalized["discount_badge"] is None
-    assert "DISCOUNT_TEXT_MISSING" in normalized["warnings"]
+
+def test_normalize_item_without_visible_discount_returns_null_badge():
+    raw = {"sku": "NO-DISC", "regular": 100, "sale": 90}
+    item = normalize_item(raw)
+    assert item["discount_badge"] is None

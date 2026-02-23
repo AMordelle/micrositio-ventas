@@ -14,21 +14,14 @@ class VisionOpenAIClient:
 
         self.client = OpenAI()
         self.model = model
+        self.last_raw_output: str | None = None
 
     def extract_page_json(self, image_path: Path, page_num: int) -> dict[str, Any]:
+        self.last_raw_output = None
         image_base64 = base64.b64encode(image_path.read_bytes()).decode("utf-8")
-        response = self._create_response(image_base64)
-        raw_text = self._extract_raw_text(response)
-
-        if raw_text is None:
-            return self._non_json_fallback(page_num=page_num, raw_text="")
-
-        return self._parse_json_output(raw_text=raw_text, page_num=page_num)
-
-    def _create_response(self, image_base64: str):
-        payload = {
-            "model": self.model,
-            "input": [
+        response = self.client.responses.create(
+            model=self.model,
+            input=[
                 {
                     "role": "user",
                     "content": [
@@ -40,16 +33,20 @@ class VisionOpenAIClient:
                     ],
                 }
             ],
-            "response_format": {"type": "json_object"},
-        }
+            response_format={"type": "json_object"},
+        )
 
-        try:
-            return self.client.responses.create(**payload)
-        except Exception as exc:  # noqa: BLE001
-            if "response_format" not in str(exc):
-                raise
-            payload.pop("response_format", None)
-            return self.client.responses.create(**payload)
+        raw_text = self._extract_raw_text(response)
+        if raw_text is None:
+            self.last_raw_output = ""
+            return {"page": page_num, "items": []}
+
+        parsed = self._parse_json_output(raw_text)
+        if parsed is None:
+            self.last_raw_output = raw_text
+            return {"page": page_num, "items": []}
+
+        return parsed
 
     @staticmethod
     def _extract_raw_text(response: Any) -> str | None:
@@ -64,7 +61,8 @@ class VisionOpenAIClient:
 
         return None
 
-    def _parse_json_output(self, raw_text: str, page_num: int) -> dict[str, Any]:
+    @staticmethod
+    def _parse_json_output(raw_text: str) -> dict[str, Any] | None:
         try:
             parsed = json.loads(raw_text)
             if isinstance(parsed, dict):
@@ -81,15 +79,6 @@ class VisionOpenAIClient:
                 if isinstance(parsed, dict):
                     return parsed
             except json.JSONDecodeError:
-                pass
+                return None
 
-        return self._non_json_fallback(page_num=page_num, raw_text=raw_text)
-
-    @staticmethod
-    def _non_json_fallback(page_num: int, raw_text: str) -> dict[str, Any]:
-        return {
-            "page": page_num,
-            "items": [],
-            "warnings": ["NON_JSON_OUTPUT_FALLBACK"],
-            "_raw_output": raw_text,
-        }
+        return None

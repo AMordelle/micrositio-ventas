@@ -20,6 +20,8 @@ def merge_pages_by_sku(
         page_num = page_doc.get("page")
         for item in page_doc.get("items", []):
             sku = item.get("sku")
+            prices = item.get("prices") if isinstance(item.get("prices"), dict) else {}
+
             if not sku:
                 unmatched = deepcopy(item)
                 unmatched["page"] = page_num
@@ -34,12 +36,12 @@ def merge_pages_by_sku(
                     "title": item.get("title"),
                     "variant": item.get("variant"),
                     "size": item.get("size"),
-                    "price_regular": item.get("price_regular"),
-                    "price_sale_final": item.get("price_sale_final"),
+                    "price_regular": prices.get("regular"),
+                    "price_sale_final": prices.get("sale"),
                     "discount_badge": item.get("discount_badge"),
-                    "notes": item.get("notes"),
+                    "notes": item.get("description") or item.get("bullets"),
                     "trace": {"pages": [page_num] if page_num is not None else []},
-                    "warnings": list(item.get("warnings", [])),
+                    "warnings": [],
                 }
                 continue
 
@@ -49,23 +51,18 @@ def merge_pages_by_sku(
                 pages.add(page_num)
             merged["trace"]["pages"] = sorted(pages)
 
-            if item.get("warnings"):
-                warning_set = set(merged.get("warnings", []))
-                warning_set.update(item["warnings"])
-                merged["warnings"] = sorted(warning_set)
+            incoming_values = {
+                "title": item.get("title"),
+                "variant": item.get("variant"),
+                "size": item.get("size"),
+                "price_regular": prices.get("regular"),
+                "price_sale_final": prices.get("sale"),
+                "discount_badge": item.get("discount_badge"),
+                "notes": item.get("description") or item.get("bullets"),
+            }
 
-            for field in [
-                "title",
-                "variant",
-                "size",
-                "price_regular",
-                "price_sale_final",
-                "discount_badge",
-                "notes",
-            ]:
-                new_value = item.get(field)
+            for field, new_value in incoming_values.items():
                 old_value = merged.get(field)
-
                 if _is_missing(old_value) and not _is_missing(new_value):
                     merged[field] = new_value
                     continue
