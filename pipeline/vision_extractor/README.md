@@ -1,8 +1,8 @@
-# Vision Extractor (FASE 1)
+# Vision Extractor (FASE actual)
 
-Este módulo implementa una primera versión de extracción visual de catálogos PDF usando OpenAI Responses API (Vision), procesando páginas completas como imagen.
+Este módulo extrae información por página desde PDF usando OpenAI Responses API (Vision), procesando cada página completa como imagen.
 
-## Qué hace esta fase
+## Qué hace
 
 - Convierte páginas PDF a PNG con PyMuPDF (render 2x).
 - Permite seleccionar páginas con:
@@ -10,28 +10,33 @@ Este módulo implementa una primera versión de extracción visual de catálogos
   - `--end-page`
   - `--skip-pages`
 - Envía cada página completa a Vision (`detail="high"`).
-- Valida salida con esquema Pydantic de FASE 1.
+- Valida salida con esquema Pydantic final por página.
 - Reintenta 1 vez si la respuesta no es JSON válido o no cumple esquema.
 - Guarda un JSON por página en:
   - `output/vision/<catalog>/<cycle>/page_XXXX.json`
 
-## Estructura de salida FASE 1
+## Estructura de salida por página
 
 ```json
 {
-  "page": 14,
-  "blocks": [
+  "page": 71,
+  "items": [
     {
-      "title": "string|null",
-      "description": "string|null",
-      "is_kit": false,
-      "kit_includes": [],
+      "sku": "127766",
+      "title": "Base matte powder multifuncional",
+      "variant": "21C",
+      "size": "20 g",
       "prices": {
         "currency": "MXN",
-        "regular": null,
-        "sale": null
+        "regular": 549,
+        "sale": 356.85
       },
-      "discount_text": "string|null"
+      "discount_badge": {
+        "text": "35% de descuento",
+        "percent": 35,
+        "kind": "exact"
+      },
+      "points": 34
     }
   ]
 }
@@ -39,11 +44,14 @@ Este módulo implementa una primera versión de extracción visual de catálogos
 
 ## Reglas importantes
 
-- No calcula porcentajes.
-- No infiere descuentos.
-- `discount_text` se conserva textual tal como aparezca.
-- Si un dato no aparece, se guarda `null` (o lista vacía en `kit_includes`).
-- No genera `by_sku.json` en esta fase.
+- No calcula porcentajes usando precios.
+- No infiere descuentos no visibles.
+- No inventa valores.
+- Si no hay SKU visible, no se crea item.
+- No mezclar información entre bloques distintos.
+- Segmentación por sub-bloques: promo y precio solo aplican a SKUs del sub-bloque donde son visibles.
+- No propagar promo entre listas de tonos separadas.
+- Evita duplicados inconsistentes por SKU en la misma página.
 
 ## Uso
 

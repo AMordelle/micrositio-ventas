@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from typing import Any
 
 from openai import OpenAI
@@ -13,45 +14,65 @@ from pipeline.vision_extractor.utils_io import png_to_data_url
 PHASE1_PROMPT = """
 Eres un extractor visual de catálogos. Analiza TODA la imagen de una página y responde SOLO JSON válido.
 
-Objetivo:
-- Detecta bloques visuales independientes de productos o kits.
-- NO mezcles información entre bloques distintos.
-- Si hay promo global con variantes, NO expandas variantes en esta fase.
-
-Para cada bloque extrae:
-- title (nombre breve visible del producto, o null)
-- description (descripción visible, o null)
-- is_kit (true solo si explícitamente parece kit/paquete/conjunto)
-- kit_includes (lista textual de lo que incluye solo si se ve explícitamente, si no lista vacía)
-- prices.currency siempre "MXN"
-- prices.regular (número o null)
-- prices.sale (número o null)
-- discount_text (texto EXACTO tal como aparece, por ejemplo "35% de descuento", "Más del 45%", "Hasta 30%"; si no aparece, null)
-
-Reglas críticas:
-- NO calcules porcentajes.
-- NO infieras descuentos.
-- Si un dato no aparece, usa null (o lista vacía para kit_includes).
-- Mantén discount_text exactamente como aparece en la página.
-
-Responde este formato exacto:
+Debes devolver este schema FINAL exacto por página:
 {
   "page": <int>,
-  "blocks": [
+  "items": [
     {
+      "sku": "<string>",
       "title": "<string|null>",
-      "description": "<string|null>",
-      "is_kit": <bool>,
-      "kit_includes": ["<string>", ...],
-      "prices": {
-        "currency": "MXN",
-        "regular": <number|null>,
-        "sale": <number|null>
-      },
-      "discount_text": "<string|null>"
+      "variant": "<string|null>",
+      "size": "<string|null>",
+      "prices": { "currency": "MXN", "regular": <number|null>, "sale": <number|null> },
+      "discount_badge": { "text": "<string>", "percent": <int|null>, "kind": "exact|more_than|up_to" } | null,
+      "points": <int|null>
     }
   ]
 }
+
+Reglas NO negociables:
+- NO calcular porcentajes desde precios.
+- NO inferir descuentos no visibles.
+- NO inventar valores.
+- NO mezclar información entre bloques distintos.
+- Si no es visible: null.
+
+Regla de segmentación (muy importante):
+- Un bloque de producto puede tener SUB-BLOQUES internos con listas de tonos/variantes.
+- Cada sub-bloque tiene su propio contexto de promo/precio para sus SKUs.
+- Si hay dos listas de tonos del mismo producto:
+  - lista con badge + precio promo => SOLO esos SKUs con sale y discount_badge.
+  - lista sin badge y sin promo => esos SKUs con sale=null y discount_badge=null.
+- PROHIBIDO propagar promo/badge entre sub-bloques.
+
+Regla de expansión por SKU:
+- Si un sub-bloque muestra SKUs visibles, generar 1 item por SKU.
+- sku debe ser EXACTAMENTE el número visible (ej. "(127766)" => "127766").
+- variant debe usar el tono/código visible (ej. "21C").
+- Si un producto/variante no tiene SKU visible, NO crear item.
+
+Regla de "Repuesto":
+- Si está marcado como "Repuesto" y no tiene badge propio:
+  - discount_badge=null
+  - prices.sale=null
+  - prices.regular=precio visible
+- Solo heredar promo si está explícitamente dentro del mismo sub-bloque con badge.
+
+Discount badge:
+- text: EXACTO tal como aparece.
+- kind/percent extraídos solo del texto del badge:
+  - "35% de descuento" => kind="exact", percent=35
+  - "Más del 45%" => kind="more_than", percent=45
+  - "Hasta 30%" => kind="up_to", percent=30
+- Si no hay número claro => percent=null; kind según palabras ("Más del"/"Hasta"/default "exact").
+
+Tamaño y puntos:
+- size si aparece, por ejemplo "20 g" o "10 g".
+- points si aparece, por ejemplo "34 pts" => points=34.
+
+Importante:
+- Evita duplicados inconsistentes de un mismo SKU.
+- Responde SOLO JSON, sin markdown.
 """.strip()
 
 
@@ -89,6 +110,15 @@ class VisionPhase1Client:
 
         return json.dumps(response.model_dump())
 
+    @staticmethod
+    def _extract_json(raw: str) -> Any:
+        cleaned = raw.strip()
+        if cleaned.startswith("```"):
+            match = re.search(r"```(?:json)?\s*(.*?)\s*```", cleaned, flags=re.DOTALL)
+            if match:
+                cleaned = match.group(1)
+        return json.loads(cleaned)
+
     def extract_page_with_retry(self, page_number: int, image_bytes: bytes, retries: int = 1) -> PageExtraction:
         attempts = retries + 1
         last_error: Exception | None = None
@@ -96,12 +126,12 @@ class VisionPhase1Client:
         for _ in range(attempts):
             try:
                 raw = self._invoke(page_number=page_number, image_bytes=image_bytes)
-                payload: Any = json.loads(raw)
+                payload = self._extract_json(raw)
                 validated = PageExtraction.model_validate(payload)
                 if validated.page != page_number:
                     validated.page = page_number
                 return validated
-            except (json.JSONDecodeError, ValidationError) as exc:
+            except (json.JSONDecodeError, ValidationError, ValueError) as exc:
                 last_error = exc
 
         raise RuntimeError(f"Vision output invalid for page {page_number}: {last_error}")
