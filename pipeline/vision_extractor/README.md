@@ -45,6 +45,24 @@ python pipeline/vision_extractor/run_vision_extract.py \
   --end-page 20
 ```
 
+### Solo rango
+
+```bash
+python pipeline/vision_extractor/run_vision_extract.py   --pdf input_pdfs/CasaEstilo202603.pdf   --catalog casa_estilo   --cycle 2026-03   --start-page 3   --end-page 160
+```
+
+### Saltar primeras páginas
+
+```bash
+python pipeline/vision_extractor/run_vision_extract.py   --pdf input_pdfs/Natura202603.pdf   --catalog natura   --cycle 2026-03   --skip-pages "1-6"
+```
+
+### Mixto (rango + skip)
+
+```bash
+python pipeline/vision_extractor/run_vision_extract.py   --pdf input_pdfs/Avon202603.pdf   --catalog avon   --cycle 2026-03   --start-page 1   --end-page 200   --skip-pages "1,2,3,5-10"
+```
+
 ### Catálogo completo
 
 ```bash
@@ -67,8 +85,9 @@ Opcionales:
 - `--model gpt-4.1-mini`
 - `--retry 1`
 - `--max-pages N`
-- `--start-page N`
+- `--start-page N` (default 1)
 - `--end-page N`
+- `--skip-pages "1,2,3,5-10"`
 - `--sleep-ms 0`
 
 ## Outputs

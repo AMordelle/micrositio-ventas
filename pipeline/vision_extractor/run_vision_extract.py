@@ -11,11 +11,67 @@ if __package__ in {None, ""}:
 
 from pipeline.vision_extractor.merge_by_sku import merge_pages_by_sku
 from pipeline.vision_extractor.openai_client import VisionOpenAIClient
-from pipeline.vision_extractor.pdf_to_images import convert_pdf_to_png_pages
+from pipeline.vision_extractor.pdf_to_images import convert_pdf_to_png_pages, get_pdf_page_count
 
 
 VALID_CATALOGS = {"natura", "avon", "casa_estilo"}
 DEFAULT_MODEL = "gpt-4.1-mini"
+
+
+def parse_page_spec(skip_pages_str: str | None) -> set[int]:
+    if skip_pages_str is None or not skip_pages_str.strip():
+        return set()
+
+    pages: set[int] = set()
+    for raw_token in skip_pages_str.split(","):
+        token = raw_token.strip()
+        if not token:
+            continue
+
+        if "-" in token:
+            parts = token.split("-", maxsplit=1)
+            if len(parts) != 2 or not parts[0].strip().isdigit() or not parts[1].strip().isdigit():
+                raise ValueError(f"Invalid page range in --skip-pages: '{token}'")
+            start = int(parts[0].strip())
+            end = int(parts[1].strip())
+            if start < 1 or end < 1:
+                raise ValueError(f"Skip pages must be >= 1: '{token}'")
+            if start > end:
+                raise ValueError(f"Invalid page range (start > end) in --skip-pages: '{token}'")
+            pages.update(range(start, end + 1))
+        else:
+            if not token.isdigit():
+                raise ValueError(f"Invalid page number in --skip-pages: '{token}'")
+            page = int(token)
+            if page < 1:
+                raise ValueError(f"Skip pages must be >= 1: '{token}'")
+            pages.add(page)
+
+    return pages
+
+
+def select_pages_to_process(
+    *,
+    total_pages: int,
+    start_page: int = 1,
+    end_page: int | None = None,
+    skip_pages: set[int] | None = None,
+    max_pages: int | None = None,
+) -> tuple[list[int], list[int]]:
+    if start_page < 1:
+        raise ValueError("start-page must be >= 1")
+
+    selected_end_page = end_page if end_page is not None else total_pages
+    if selected_end_page < start_page:
+        raise ValueError("end-page must be >= start-page")
+
+    skip_pages = skip_pages or set()
+    pages_selected = [
+        page for page in range(start_page, selected_end_page + 1) if page <= total_pages and page not in skip_pages
+    ]
+
+    pages_processed = pages_selected[:max_pages] if max_pages is not None else pages_selected
+    return pages_selected, pages_processed
 
 
 def _validate_page_payload(payload: dict[str, Any], page_num: int) -> dict[str, Any]:
@@ -40,8 +96,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model", default=DEFAULT_MODEL)
     parser.add_argument("--retry", type=int, default=1)
     parser.add_argument("--max-pages", type=int, default=None)
-    parser.add_argument("--start-page", type=int, default=None)
+    parser.add_argument("--start-page", type=int, default=1)
     parser.add_argument("--end-page", type=int, default=None)
+    parser.add_argument("--skip-pages", type=str, default=None)
     parser.add_argument("--sleep-ms", type=int, default=0)
     return parser.parse_args()
 
@@ -58,13 +115,21 @@ def main() -> int:
     pages_dir.mkdir(parents=True, exist_ok=True)
     page_json_dir.mkdir(parents=True, exist_ok=True)
 
+    total_pages_pdf = get_pdf_page_count(args.pdf)
+    skip_pages = parse_page_spec(args.skip_pages)
+    pages_selected, pages_processed = select_pages_to_process(
+        total_pages=total_pages_pdf,
+        start_page=args.start_page,
+        end_page=args.end_page,
+        skip_pages=skip_pages,
+        max_pages=args.max_pages,
+    )
+
     page_images = convert_pdf_to_png_pages(
         pdf_path=args.pdf,
         output_dir=pages_dir,
+        pages=pages_processed,
         dpi=args.dpi,
-        start_page=args.start_page,
-        end_page=args.end_page,
-        max_pages=args.max_pages,
     )
 
     client = VisionOpenAIClient(model=args.model)
@@ -129,7 +194,13 @@ def main() -> int:
         "catalog": args.catalog,
         "cycle": args.cycle,
         "pdf": str(args.pdf),
-        "pages_total_rendered": len(page_images),
+        "start_page": args.start_page,
+        "end_page": args.end_page,
+        "skip_pages_raw": args.skip_pages,
+        "pages_selected": pages_selected,
+        "pages_total_pdf": total_pages_pdf,
+        "pages_total_rendered": len(pages_selected),
+        "pages_processed": len(page_images),
         "pages_ok": len(parsed_pages),
         "pages_error": len(error_pages),
         "error_pages": error_pages,
