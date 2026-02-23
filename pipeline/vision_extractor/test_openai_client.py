@@ -42,7 +42,6 @@ def test_extract_page_json_sends_image_url_not_image_base64(tmp_path: Path):
     assert "image_url" in image_part
     assert image_part["image_url"].startswith("data:image/png;base64,")
     assert "image_base64" not in image_part
-    assert fake.responses.kwargs["response_format"] == {"type": "json_object"}
 
 
 def test_extract_page_json_parses_json_substring(tmp_path: Path):
@@ -57,7 +56,7 @@ def test_extract_page_json_parses_json_substring(tmp_path: Path):
     assert parsed == {"page": 1, "items": []}
 
 
-def test_extract_page_json_returns_empty_items_on_non_json(tmp_path: Path):
+def test_extract_page_json_returns_empty_items_with_warning_on_non_json(tmp_path: Path):
     image_path = tmp_path / "page.png"
     image_path.write_bytes(b"fake-image")
 
@@ -66,5 +65,5 @@ def test_extract_page_json_returns_empty_items_on_non_json(tmp_path: Path):
 
     parsed = client.extract_page_json(image_path=image_path, page_num=7)
 
-    assert parsed == {"page": 7, "items": []}
+    assert parsed == {"page": 7, "items": [], "warnings": ["NON_JSON_OUTPUT"]}
     assert client.last_raw_output == "not-json"

@@ -1,7 +1,8 @@
 VISION_PROMPT = """Eres un extractor VISUAL de catálogos (Natura / Avon / Casa y Estilo).
 Tu entrada es UNA imagen de una página del PDF.
 
-Devuelve SOLO JSON válido (sin markdown ni texto adicional) y cumple EXACTAMENTE este schema:
+Devuelve SOLO JSON válido. Sin markdown. Sin texto adicional.
+Cumple EXACTAMENTE este schema:
 {
   "page": <int>,
   "items": [

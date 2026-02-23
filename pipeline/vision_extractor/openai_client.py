@@ -33,18 +33,17 @@ class VisionOpenAIClient:
                     ],
                 }
             ],
-            response_format={"type": "json_object"},
         )
 
         raw_text = self._extract_raw_text(response)
         if raw_text is None:
             self.last_raw_output = ""
-            return {"page": page_num, "items": []}
+            return {"page": page_num, "items": [], "warnings": ["NON_JSON_OUTPUT"]}
 
         parsed = self._parse_json_output(raw_text)
         if parsed is None:
             self.last_raw_output = raw_text
-            return {"page": page_num, "items": []}
+            return {"page": page_num, "items": [], "warnings": ["NON_JSON_OUTPUT"]}
 
         return parsed
 
