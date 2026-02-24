@@ -173,7 +173,7 @@ def call_vision(context: str, page_number: int, image_png_bytes: bytes) -> dict[
                 "role": "user",
                 "content": [
                     {"type": "input_text", "text": prompt},
-                    {"type": "input_image", "image_base64": image_b64, "mime_type": "image/png"},
+                    {"type": "input_image", "image_url": f"data:image/png;base64,{image_b64}", "detail": "high"},
                 ],
             },
         ],
@@ -194,6 +194,21 @@ def call_vision(context: str, page_number: int, image_png_bytes: bytes) -> dict[
             data = resp.read().decode("utf-8")
     except error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="ignore")
+        if exc.code == 400:
+            input_summary: list[dict[str, Any]] = []
+            for msg in body.get("input", []):
+                content = msg.get("content", [])
+                input_summary.append(
+                    {
+                        "role": msg.get("role"),
+                        "content_types": [item.get("type") for item in content],
+                        "content_keys": [sorted(item.keys()) for item in content],
+                    }
+                )
+            raise RuntimeError(
+                "Error HTTP 400 en Responses API. "
+                f"input_summary={json.dumps(input_summary, ensure_ascii=False)} detail={detail}"
+            ) from exc
         raise RuntimeError(f"Error HTTP en Responses API: {exc.code} {detail}") from exc
     except error.URLError as exc:
         raise RuntimeError(f"Error de red en Responses API: {exc}") from exc
