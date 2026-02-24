@@ -137,7 +137,90 @@ def validate_page_schema(payload: dict[str, Any], expected_page: int) -> dict[st
     return payload
 
 
-def call_vision(context: str, page_number: int, image_png_bytes: bytes) -> dict[str, Any]:
+def is_suspicious_sku(sku: str) -> bool:
+    if not sku.isdigit():
+        return True
+    if len(sku) > 6:
+        return True
+    if " " in sku or "-" in sku:
+        return True
+    return False
+
+
+def contains_repuesto(title: str | None) -> bool:
+    if not title:
+        return False
+    return "repuesto" in title.lower()
+
+
+def apply_repuesto_title_normalization(items: list[dict[str, Any]]) -> None:
+    for item in items:
+        title = item.get("title")
+        variant = item.get("variant")
+        if (
+            isinstance(title, str)
+            and title.strip().lower() == "repuesto"
+            and isinstance(variant, str)
+            and len(variant.strip()) >= 10
+        ):
+            item["title"] = f"Repuesto {variant.strip()}"
+            item["variant"] = None
+
+
+def detect_guardrail_issues(items: list[dict[str, Any]]) -> list[str]:
+    reasons: list[str] = []
+
+    if any(is_suspicious_sku(str(item.get("sku", ""))) for item in items):
+        reasons.append("suspicious_sku")
+
+    principal_skus = {
+        item["sku"]
+        for item in items
+        if isinstance(item.get("sku"), str) and not contains_repuesto(item.get("title"))
+    }
+    repuesto_skus = {
+        item["sku"]
+        for item in items
+        if isinstance(item.get("sku"), str) and contains_repuesto(item.get("title"))
+    }
+
+    if principal_skus.intersection(repuesto_skus):
+        reasons.append("repuesto_principal_overlap")
+
+    if any(
+        contains_repuesto(item.get("title")) and is_suspicious_sku(str(item.get("sku", ""))) for item in items
+    ):
+        reasons.append("repuesto_suspicious_sku")
+
+    return reasons
+
+
+def build_guardrail_instruction(reasons: list[str]) -> str:
+    instructions: list[str] = []
+    if "suspicious_sku" in reasons:
+        instructions.append(
+            "Relee SOLO los SKUs de la página y devuélvelos exactamente como aparecen impresos "
+            "(números entre paréntesis). No agregues dígitos."
+        )
+    if "repuesto_principal_overlap" in reasons or "repuesto_suspicious_sku" in reasons:
+        instructions.append(
+            "Los SKUs del producto principal no pueden aparecer como Repuesto. "
+            "Extrae Repuesto SOLO de la sección rotulada 'Repuesto'. "
+            "No inventes SKUs. Si un SKU no es legible, omite el item completo."
+        )
+        instructions.append(
+            "Para Repuesto, devuelve pares (variant, sku) respetando el orden de la lista impresa; "
+            "no cruces filas."
+        )
+    return " ".join(instructions)
+
+
+def call_vision(
+    context: str,
+    page_number: int,
+    image_png_bytes: bytes,
+    extra_instruction: str | None = None,
+) -> dict[str, Any]:
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
         raise RuntimeError("OPENAI_API_KEY no configurado")
@@ -163,6 +246,8 @@ def call_vision(context: str, page_number: int, image_png_bytes: bytes) -> dict[
         "Responde ÚNICAMENTE JSON válido sin markdown y con este schema exacto: "
         + json.dumps(schema_hint, ensure_ascii=False)
     )
+    if extra_instruction:
+        prompt = f"{prompt} {extra_instruction}"
 
     image_b64 = base64.b64encode(image_png_bytes).decode("utf-8")
     body = {
@@ -313,6 +398,32 @@ def main() -> None:
             page_file.write_text(json.dumps(fallback, ensure_ascii=False, indent=2), encoding="utf-8")
             page_results.append(PageResult(page=page_number, items=[], error=error_message))
             continue
+
+        guardrail_reasons = detect_guardrail_issues(validated["items"])
+        if guardrail_reasons:
+            print(f"page={page_number} guardrail_retry_triggered reasons={','.join(guardrail_reasons)}")
+            extra_instruction = build_guardrail_instruction(guardrail_reasons)
+            try:
+                retry_payload = call_vision(
+                    context,
+                    page_number,
+                    image_png,
+                    extra_instruction=extra_instruction,
+                )
+                print(f"page={page_number} vision_ok guardrail_retry")
+                retry_validated = validate_page_schema(retry_payload, page_number)
+                print(f"page={page_number} json_valid guardrail_retry")
+                validated = retry_validated
+            except Exception as exc:  # noqa: BLE001
+                print(f"page={page_number} guardrail_retry_failed error={exc}")
+
+            post_retry_reasons = detect_guardrail_issues(validated["items"])
+            if post_retry_reasons:
+                print(
+                    f"page={page_number} warning_guardrail_unresolved reasons={','.join(post_retry_reasons)}"
+                )
+
+        apply_repuesto_title_normalization(validated["items"])
 
         page_file.write_text(json.dumps(validated, ensure_ascii=False, indent=2), encoding="utf-8")
         if not validated["items"]:
