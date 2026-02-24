@@ -43,6 +43,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--end-page", type=int, default=None, help="Página final (1-index)")
     parser.add_argument("--skip-pages", default="", help="Lista CSV de páginas a saltar (1-index)")
     parser.add_argument("--allow-partial", action="store_true", help="Generar by_sku.json aunque haya errores")
+    parser.add_argument("--save-images", action="store_true", help="Guardar PNG renderizado de cada página")
     return parser.parse_args()
 
 
@@ -233,11 +234,15 @@ def main() -> None:
 
     output_dir = Path("output") / "vision" / args.catalog / args.cycle
     output_dir.mkdir(parents=True, exist_ok=True)
+    pages_image_dir = output_dir / "pages"
+    if args.save_images:
+        pages_image_dir.mkdir(parents=True, exist_ok=True)
 
     skip_pages = parse_skip_pages(args.skip_pages)
 
     page_results: list[PageResult] = []
     pages_error = 0
+    pages_ok = 0
 
     with fitz.open(pdf_path) as doc:
         total_pages = len(doc)
@@ -254,19 +259,36 @@ def main() -> None:
             continue
 
         page_file = output_dir / f"page_{page_number:04d}.json"
+        page_image_file = pages_image_dir / f"page_{page_number:04d}.png"
         page_index = page_number - 1
 
         error_message: str | None = None
         validated: dict[str, Any] | None = None
 
+        try:
+            image_png = page_to_png_bytes(pdf_path, page_index)
+            if args.save_images:
+                page_image_file.write_bytes(image_png)
+            print(f"page={page_number} render_ok bytes={len(image_png)}")
+        except Exception as exc:  # noqa: BLE001
+            error_message = f"render_failed page={page_number} error={exc}"
+            print(error_message)
+            pages_error += 1
+            fallback = {"page": page_number, "items": []}
+            page_file.write_text(json.dumps(fallback, ensure_ascii=False, indent=2), encoding="utf-8")
+            page_results.append(PageResult(page=page_number, items=[], error=error_message))
+            continue
+
         for attempt in range(2):
             try:
-                image_png = page_to_png_bytes(pdf_path, page_index)
                 payload = call_vision(context, page_number, image_png)
+                print(f"page={page_number} vision_ok")
                 validated = validate_page_schema(payload, page_number)
+                print(f"page={page_number} json_valid")
                 break
             except Exception as exc:  # noqa: BLE001
-                error_message = f"Intento {attempt + 1} falló en página {page_number}: {exc}"
+                error_message = f"vision_failed page={page_number} attempt={attempt + 1} error={exc}"
+                print(error_message)
                 if attempt == 1:
                     break
 
@@ -278,6 +300,9 @@ def main() -> None:
             continue
 
         page_file.write_text(json.dumps(validated, ensure_ascii=False, indent=2), encoding="utf-8")
+        if not validated["items"]:
+            print(f"page={page_number} no_items_detected (valid)")
+        pages_ok += 1
         page_results.append(PageResult(page=page_number, items=validated["items"]))
 
     if pages_error == 0 or args.allow_partial:
@@ -285,8 +310,12 @@ def main() -> None:
         by_sku_path = output_dir / "by_sku.json"
         by_sku_path.write_text(json.dumps(by_sku_items, ensure_ascii=False, indent=2), encoding="utf-8")
 
+    if len(page_results) != pages_ok + pages_error:
+        raise RuntimeError("Inconsistencia en conteo de páginas: pages_processed != pages_ok + pages_error")
+
     summary = {
         "pages_processed": len(page_results),
+        "pages_ok": pages_ok,
         "pages_error": pages_error,
         "output_dir": str(output_dir),
         "by_sku_generated": pages_error == 0 or args.allow_partial,

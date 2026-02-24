@@ -32,6 +32,19 @@ python pipeline/vision_extractor/run_vision_extract.py \
   --skip-pages 2,5,9
 ```
 
+
+### Guardar imágenes renderizadas
+
+```bash
+python pipeline/vision_extractor/run_vision_extract.py \
+  --pdf input_pdfs/natura_c18.pdf \
+  --catalog natura \
+  --cycle c18 \
+  --start-page 21 \
+  --end-page 21 \
+  --save-images
+```
+
 ### Permitir consolidado parcial
 
 ```bash
@@ -45,4 +58,5 @@ python pipeline/vision_extractor/run_vision_extract.py \
 ## Salidas
 
 - JSON por página: `output/vision/<catalog>/<cycle>/page_XXXX.json`
+- PNG por página (opcional con `--save-images`): `output/vision/<catalog>/<cycle>/pages/page_XXXX.png`
 - Consolidado por SKU: `output/vision/<catalog>/<cycle>/by_sku.json` (solo si no hay errores o si se usa `--allow-partial`)
