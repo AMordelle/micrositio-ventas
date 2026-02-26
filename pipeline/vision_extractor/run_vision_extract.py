@@ -44,6 +44,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--skip-pages", default="", help="Lista CSV de páginas a saltar (1-index)")
     parser.add_argument("--allow-partial", action="store_true", help="Generar by_sku.json aunque haya errores")
     parser.add_argument("--save-images", action="store_true", help="Guardar PNG renderizado de cada página")
+    parser.add_argument("--only-discount-pages", action="store_true", help="Filtrar y extraer solo páginas candidatas por criterio visual")
     return parser.parse_args()
 
 
@@ -215,6 +216,78 @@ def build_guardrail_instruction(reasons: list[str]) -> str:
     return " ".join(instructions)
 
 
+
+def call_vision_quick_scan(context: str, page_number: int, image_png_bytes: bytes) -> dict[str, Any]:
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY no configurado")
+
+    prompt = (
+        "Analiza visualmente la página completa y responde SOLO JSON válido sin markdown con este schema exacto: "
+        '{"page": <int>, "has_percent": <bool>, "has_price": <bool>, "has_de_a_pattern": <bool>, "should_extract": <bool>}. '
+        "No uses semántica de palabras; usa solo patrones visuales. "
+        "should_extract debe ser has_percent AND has_price AND has_de_a_pattern."
+    )
+
+    image_b64 = base64.b64encode(image_png_bytes).decode("utf-8")
+    body = {
+        "model": MODEL,
+        "input": [
+            {"role": "system", "content": [{"type": "input_text", "text": context}]},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": prompt},
+                    {"type": "input_image", "image_url": f"data:image/png;base64,{image_b64}", "detail": "high"},
+                ],
+            },
+        ],
+    }
+
+    req = request.Request(
+        RESPONSES_URL,
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        data=json.dumps(body).encode("utf-8"),
+    )
+
+    try:
+        with request.urlopen(req, timeout=120) as resp:
+            data = resp.read().decode("utf-8")
+    except error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="ignore")
+        raise RuntimeError(f"Error HTTP quick scan en Responses API: {exc.code} {detail}") from exc
+    except error.URLError as exc:
+        raise RuntimeError(f"Error de red quick scan en Responses API: {exc}") from exc
+
+    response_json = json.loads(data)
+    output_text = extract_response_text(response_json)
+    if not output_text:
+        raise RuntimeError("Quick scan no devolvió output_text")
+
+    try:
+        payload = json.loads(output_text)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"Quick scan JSON inválido: {exc}") from exc
+
+    expected_keys = {"page", "has_percent", "has_price", "has_de_a_pattern", "should_extract"}
+    if not isinstance(payload, dict) or set(payload.keys()) != expected_keys:
+        raise RuntimeError("Quick scan schema inválido")
+
+    if payload["page"] != page_number:
+        raise RuntimeError("Quick scan page inválido")
+
+    for key in ("has_percent", "has_price", "has_de_a_pattern", "should_extract"):
+        if not isinstance(payload[key], bool):
+            raise RuntimeError(f"Quick scan campo inválido: {key}")
+
+    expected_should_extract = payload["has_percent"] and payload["has_price"] and payload["has_de_a_pattern"]
+    payload["should_extract"] = expected_should_extract
+    return payload
+
 def call_vision(
     context: str,
     page_number: int,
@@ -343,6 +416,8 @@ def main() -> None:
     page_results: list[PageResult] = []
     pages_error = 0
     pages_ok = 0
+    pages_selected: list[int] = []
+    pages_skipped_filter: list[int] = []
 
     with fitz.open(pdf_path) as doc:
         total_pages = len(doc)
@@ -378,6 +453,34 @@ def main() -> None:
             page_file.write_text(json.dumps(fallback, ensure_ascii=False, indent=2), encoding="utf-8")
             page_results.append(PageResult(page=page_number, items=[], error=error_message))
             continue
+
+        if args.only_discount_pages:
+            try:
+                quick_scan = call_vision_quick_scan(context, page_number, image_png)
+                print(
+                    "page="
+                    f"{page_number} quick_scan should_extract={quick_scan['should_extract']} "
+                    f"percent={quick_scan['has_percent']} price={quick_scan['has_price']} "
+                    f"de_a={quick_scan['has_de_a_pattern']}"
+                )
+            except Exception as exc:  # noqa: BLE001
+                error_message = f"vision_failed page={page_number} quick_scan error={exc}"
+                print(error_message)
+                pages_error += 1
+                fallback = {"page": page_number, "items": []}
+                page_file.write_text(json.dumps(fallback, ensure_ascii=False, indent=2), encoding="utf-8")
+                page_results.append(PageResult(page=page_number, items=[], error=error_message))
+                continue
+
+            if not quick_scan["should_extract"]:
+                pages_skipped_filter.append(page_number)
+                fallback = {"page": page_number, "items": []}
+                page_file.write_text(json.dumps(fallback, ensure_ascii=False, indent=2), encoding="utf-8")
+                print(f"page={page_number} skipped_by_filter")
+                pages_ok += 1
+                page_results.append(PageResult(page=page_number, items=[]))
+                continue
+            pages_selected.append(page_number)
 
         for attempt in range(2):
             try:
@@ -430,6 +533,15 @@ def main() -> None:
             print(f"page={page_number} no_items_detected (valid)")
         pages_ok += 1
         page_results.append(PageResult(page=page_number, items=validated["items"]))
+
+    if args.only_discount_pages:
+        filter_report = {
+            "total_pages": len(page_results),
+            "pages_selected": pages_selected,
+            "pages_skipped": pages_skipped_filter,
+        }
+        filter_report_path = output_dir / "filter_report.json"
+        filter_report_path.write_text(json.dumps(filter_report, ensure_ascii=False, indent=2), encoding="utf-8")
 
     if pages_error == 0 or args.allow_partial:
         by_sku_items = consolidate_by_sku(page_results)

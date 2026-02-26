@@ -33,6 +33,19 @@ python pipeline/vision_extractor/run_vision_extract.py \
 ```
 
 
+
+### Extraer solo páginas candidatas de descuento
+
+```bash
+python pipeline/vision_extractor/run_vision_extract.py \
+  --pdf input_pdfs/natura_c18.pdf \
+  --catalog natura \
+  --cycle c18 \
+  --only-discount-pages
+```
+
+Con este flag se genera `filter_report.json` y las páginas no candidatas se guardan con `items=[]`.
+
 ### Guardar imágenes renderizadas
 
 ```bash
@@ -60,3 +73,4 @@ python pipeline/vision_extractor/run_vision_extract.py \
 - JSON por página: `output/vision/<catalog>/<cycle>/page_XXXX.json`
 - PNG por página (opcional con `--save-images`): `output/vision/<catalog>/<cycle>/pages/page_XXXX.png`
 - Consolidado por SKU: `output/vision/<catalog>/<cycle>/by_sku.json` (solo si no hay errores o si se usa `--allow-partial`)
+- Reporte de filtro (con `--only-discount-pages`): `output/vision/<catalog>/<cycle>/filter_report.json`
