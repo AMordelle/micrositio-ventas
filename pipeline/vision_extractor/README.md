@@ -58,6 +58,16 @@ python pipeline/vision_extractor/run_vision_extract.py \
   --save-images
 ```
 
+### Controlar auditoría estructural
+
+```bash
+python pipeline/vision_extractor/run_vision_extract.py \
+  --pdf input_pdfs/natura_c18.pdf \
+  --catalog natura \
+  --cycle c18 \
+  --no-audit
+```
+
 ### Permitir consolidado parcial
 
 ```bash
@@ -74,3 +84,4 @@ python pipeline/vision_extractor/run_vision_extract.py \
 - PNG por página (opcional con `--save-images`): `output/vision/<catalog>/<cycle>/pages/page_XXXX.png`
 - Consolidado por SKU: `output/vision/<catalog>/<cycle>/by_sku.json` (solo si no hay errores o si se usa `--allow-partial`)
 - Reporte de filtro (con `--only-discount-pages`): `output/vision/<catalog>/<cycle>/filter_report.json`
+- Auditoría estructural Vision (default, desactivar con `--no-audit`): `output/vision/<catalog>/<cycle>/vision_audit.json`

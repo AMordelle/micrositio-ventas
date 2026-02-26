@@ -62,6 +62,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--allow-partial", action="store_true", help="Generar by_sku.json aunque haya errores")
     parser.add_argument("--save-images", action="store_true", help="Guardar PNG renderizado de cada página")
     parser.add_argument("--only-discount-pages", action="store_true", help="Filtrar y extraer solo páginas candidatas por criterio visual")
+    parser.add_argument("--audit", action=argparse.BooleanOptionalAction, default=True, help="Generar vision_audit.json al finalizar")
     return parser.parse_args()
 
 
@@ -448,6 +449,196 @@ def consolidate_by_sku(page_results: list[PageResult]) -> list[dict[str, Any]]:
     return [by_sku[sku] for sku in sorted(by_sku.keys())]
 
 
+def normalize_sku_for_audit(sku: str) -> str:
+    return sku.replace("(", "").replace(")", "").replace(" ", "").replace("-", "")
+
+
+def is_repuesto_item(item: dict[str, Any]) -> bool:
+    title = item.get("title")
+    return isinstance(title, str) and "repuesto" in title.lower()
+
+
+def generate_vision_audit(
+    output_dir: Path,
+    catalog: str,
+    cycle: str,
+    processed_pages: list[int],
+) -> dict[str, Any]:
+    totals_by_reason: dict[str, int] = {}
+    pages_with_issues: list[dict[str, Any]] = []
+    total_items = 0
+
+    for page_number in processed_pages:
+        page_file = output_dir / f"page_{page_number:04d}.json"
+        if not page_file.exists():
+            continue
+
+        try:
+            page_payload = json.loads(page_file.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            continue
+
+        items = page_payload.get("items", []) if isinstance(page_payload, dict) else []
+        if not isinstance(items, list):
+            items = []
+
+        total_items += len(items)
+        page_issues: list[dict[str, Any]] = []
+
+        normalized_items: list[dict[str, Any]] = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            sku_raw = item.get("sku")
+            sku_text = sku_raw if isinstance(sku_raw, str) else ""
+            sku_norm = normalize_sku_for_audit(sku_text)
+            normalized_items.append(
+                {
+                    "item": item,
+                    "sku": sku_text,
+                    "sku_normalized": sku_norm,
+                    "sku_prefix": sku_norm[:5] if len(sku_norm) >= 5 else sku_norm,
+                    "is_repuesto": is_repuesto_item(item),
+                }
+            )
+
+            if not sku_norm.isdigit():
+                page_issues.append(
+                    {
+                        "reason": "suspicious_sku_format",
+                        "sku": sku_text,
+                        "title": item.get("title"),
+                        "variant": item.get("variant"),
+                        "details": "normalized SKU is not numeric",
+                    }
+                )
+            if len(sku_norm) > 6:
+                page_issues.append(
+                    {
+                        "reason": "suspicious_sku_length",
+                        "sku": sku_text,
+                        "title": item.get("title"),
+                        "variant": item.get("variant"),
+                        "details": "normalized SKU length is greater than 6",
+                    }
+                )
+
+            if is_repuesto_item(item) and item.get("variant") is None:
+                page_issues.append(
+                    {
+                        "reason": "repuesto_variant_missing",
+                        "sku": sku_text,
+                        "title": item.get("title"),
+                        "variant": item.get("variant"),
+                        "details": "repuesto item has null variant",
+                    }
+                )
+
+        prefix_groups: dict[str, list[dict[str, Any]]] = {}
+        for entry in normalized_items:
+            prefix = entry["sku_prefix"]
+            if not prefix:
+                continue
+            prefix_groups.setdefault(prefix, []).append(entry)
+
+        for group in prefix_groups.values():
+            has_non_repuesto_promo = any(
+                (not entry["is_repuesto"])
+                and (
+                    entry["item"].get("discount_badge") is not None
+                    or (
+                        isinstance(entry["item"].get("prices"), dict)
+                        and entry["item"]["prices"].get("sale") is not None
+                    )
+                )
+                for entry in group
+            )
+            repuesto_entries = [entry for entry in group if entry["is_repuesto"]]
+            if has_non_repuesto_promo and repuesto_entries:
+                for entry in repuesto_entries:
+                    page_issues.append(
+                        {
+                            "reason": "mixed_family_classification",
+                            "sku": entry["sku"],
+                            "title": entry["item"].get("title"),
+                            "variant": entry["item"].get("variant"),
+                            "details": "same SKU prefix appears both in promo items and repuesto items on the same page",
+                        }
+                    )
+
+        repuesto_regular_values = {
+            entry["item"]["prices"].get("regular")
+            for entry in normalized_items
+            if entry["is_repuesto"]
+            and isinstance(entry["item"].get("prices"), dict)
+            and entry["item"]["prices"].get("regular") is not None
+        }
+        promo_regular_values = {
+            entry["item"]["prices"].get("regular")
+            for entry in normalized_items
+            if (not entry["is_repuesto"])
+            and isinstance(entry["item"].get("prices"), dict)
+            and (
+                entry["item"].get("discount_badge") is not None
+                or entry["item"]["prices"].get("sale") is not None
+            )
+            and entry["item"]["prices"].get("regular") is not None
+        }
+        matched_regulars = repuesto_regular_values.intersection(promo_regular_values)
+        if matched_regulars:
+            for entry in normalized_items:
+                if not entry["is_repuesto"]:
+                    continue
+                prices = entry["item"].get("prices")
+                regular = prices.get("regular") if isinstance(prices, dict) else None
+                if regular in matched_regulars:
+                    page_issues.append(
+                        {
+                            "reason": "repuesto_price_matches_promo_regular",
+                            "sku": entry["sku"],
+                            "title": entry["item"].get("title"),
+                            "variant": entry["item"].get("variant"),
+                            "details": "repuesto regular price exactly matches promo regular price on same page",
+                        }
+                    )
+
+        repuesto_count = sum(1 for entry in normalized_items if entry["is_repuesto"])
+        if repuesto_count >= 8:
+            page_issues.append(
+                {
+                    "reason": "suspicious_repuesto_count",
+                    "sku": "",
+                    "title": None,
+                    "variant": None,
+                    "details": "too many repuesto items; possible grid mixing",
+                }
+            )
+
+        if page_issues:
+            issue_counts: dict[str, int] = {}
+            for issue in page_issues:
+                reason = issue["reason"]
+                issue_counts[reason] = issue_counts.get(reason, 0) + 1
+                totals_by_reason[reason] = totals_by_reason.get(reason, 0) + 1
+
+            pages_with_issues.append(
+                {
+                    "page": page_number,
+                    "issue_counts": issue_counts,
+                    "issues": page_issues,
+                }
+            )
+
+    return {
+        "catalog": catalog,
+        "cycle": cycle,
+        "total_pages": len(processed_pages),
+        "total_items": total_items,
+        "pages_with_issues": pages_with_issues,
+        "totals_by_reason": totals_by_reason,
+    }
+
+
 def main() -> None:
     args = parse_args()
     pdf_path = Path(args.pdf)
@@ -469,6 +660,7 @@ def main() -> None:
     skip_pages = parse_skip_pages(args.skip_pages)
 
     page_results: list[PageResult] = []
+    processed_pages: list[int] = []
     pages_error = 0
     pages_ok = 0
     pages_selected: list[int] = []
@@ -488,6 +680,7 @@ def main() -> None:
     for page_number in range(start_page, end_page + 1):
         if page_number in skip_pages:
             continue
+        processed_pages.append(page_number)
 
         page_file = output_dir / f"page_{page_number:04d}.json"
         page_image_file = pages_image_dir / f"page_{page_number:04d}.png"
@@ -648,6 +841,16 @@ def main() -> None:
         }
         filter_report_path = output_dir / "filter_report.json"
         filter_report_path.write_text(json.dumps(filter_report, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    if args.audit:
+        audit_payload = generate_vision_audit(
+            output_dir=output_dir,
+            catalog=args.catalog,
+            cycle=args.cycle,
+            processed_pages=processed_pages,
+        )
+        audit_path = output_dir / "vision_audit.json"
+        audit_path.write_text(json.dumps(audit_payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
     if pages_error == 0 or args.allow_partial:
         by_sku_items = consolidate_by_sku(page_results)
