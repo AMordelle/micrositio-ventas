@@ -14,6 +14,15 @@ Reglas obligatorias:
 11. NO calcular percent si el badge no muestra número explícito.
 12. Respetar SIEMPRE el schema fijo solicitado; no cambiar llaves ni omitir campos.
 
+Reglas de segmentación visual estricta (bloques/grids):
+13. Si existe una sección claramente rotulada "Repuesto", trátala como BLOQUE VISUAL INDEPENDIENTE.
+14. Extrae únicamente los SKUs físicamente contenidos dentro del bloque visual "Repuesto".
+15. No mezcles SKUs del bloque superior aunque tengan formato o numeración similar.
+16. Si hay dos grids de tonos uno encima del otro, considéralos productos distintos aunque compartan layout similar.
+17. No infieras continuidad entre grids.
+18. No inventes SKUs.
+19. Si no puedes determinar con certeza que un SKU pertenece al bloque "Repuesto", omítelo.
+
 Reglas de discount_badge:
 - "35% de descuento" => text exacto, percent=35, kind="exact"
 - "Más del 45%" => text exacto, percent=45, kind="more_than"

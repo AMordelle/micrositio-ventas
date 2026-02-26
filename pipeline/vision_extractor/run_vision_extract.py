@@ -364,6 +364,10 @@ def call_vision(
     prompt = (
         "Extrae SOLO datos visibles de esta página completa. "
         "No uses OCR por bloques ni coordenadas. "
+        "Segmenta visualmente los bloques/grids de forma estricta: si hay sección 'Repuesto', "
+        "trátala como bloque independiente, extrae solo SKUs físicamente contenidos ahí, "
+        "no mezcles SKUs entre grids, no infieras continuidad entre grids, no inventes SKUs "
+        "y omite SKUs dudosos en Repuesto. "
         "Responde ÚNICAMENTE JSON válido sin markdown y con este schema exacto: "
         + json.dumps(schema_hint, ensure_ascii=False)
     )
