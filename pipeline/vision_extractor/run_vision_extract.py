@@ -241,7 +241,7 @@ def call_vision_quick_scan(page_number: int, image_png_bytes: bytes) -> tuple[di
 
     prompt = (
         "Analiza visualmente la página completa y responde SOLO JSON válido sin markdown con este schema exacto: "
-        '{"page": <int>, "has_percent": <bool>, "has_price": <bool>, "has_de_a_pattern": <bool>, "should_extract": <bool>}. '
+        '{"has_percent": <bool>, "has_price": <bool>, "has_de_a_pattern": <bool>, "should_extract": <bool>}. '
         "No uses semántica de palabras; usa solo patrones visuales. "
         "should_extract debe ser has_percent AND has_price AND has_de_a_pattern."
     )
@@ -257,13 +257,12 @@ def call_vision_quick_scan(page_number: int, image_png_bytes: bytes) -> tuple[di
                     "type": "object",
                     "additionalProperties": False,
                     "properties": {
-                        "page": {"type": "integer"},
                         "has_percent": {"type": "boolean"},
                         "has_price": {"type": "boolean"},
                         "has_de_a_pattern": {"type": "boolean"},
                         "should_extract": {"type": "boolean"},
                     },
-                    "required": ["page", "has_percent", "has_price", "has_de_a_pattern", "should_extract"],
+                    "required": ["has_percent", "has_price", "has_de_a_pattern", "should_extract"],
                 },
                 "strict": True,
             }
@@ -321,22 +320,15 @@ def call_vision_quick_scan(page_number: int, image_png_bytes: bytes) -> tuple[di
     if not isinstance(payload, dict):
         raise QuickScanInvalidError("Quick scan estructura inválida", raw_to_save)
 
-    page_value = payload.get("page")
-    normalized_page = page_number
-    if isinstance(page_value, int):
-        normalized_page = page_value
-    elif isinstance(page_value, str) and page_value.strip().isdigit():
-        normalized_page = int(page_value.strip())
-
     flags: dict[str, bool] = {}
-    for key in ("has_percent", "has_price", "has_de_a_pattern"):
+    for key in ("has_percent", "has_price", "has_de_a_pattern", "should_extract"):
         if key not in payload or not isinstance(payload[key], bool):
             raise QuickScanInvalidError(f"Quick scan campo inválido: {key}", raw_to_save)
         flags[key] = payload[key]
 
     should_extract = flags["has_percent"] and flags["has_price"] and flags["has_de_a_pattern"]
     normalized = {
-        "page": normalized_page,
+        "page": page_number,
         "has_percent": flags["has_percent"],
         "has_price": flags["has_price"],
         "has_de_a_pattern": flags["has_de_a_pattern"],
