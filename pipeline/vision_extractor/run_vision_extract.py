@@ -243,11 +243,10 @@ def call_vision_quick_scan(page_number: int, image_png_bytes: bytes) -> dict[str
     image_b64 = base64.b64encode(image_png_bytes).decode("utf-8")
     body = {
         "model": MODEL,
-        "response_format": {
-            "type": "json_schema",
-            "json_schema": {
+        "text": {
+            "format": {
+                "type": "json_schema",
                 "name": "quick_scan_filter",
-                "strict": True,
                 "schema": {
                     "type": "object",
                     "additionalProperties": False,
@@ -260,7 +259,8 @@ def call_vision_quick_scan(page_number: int, image_png_bytes: bytes) -> dict[str
                     },
                     "required": ["page", "has_percent", "has_price", "has_de_a_pattern", "should_extract"],
                 },
-            },
+                "strict": True,
+            }
         },
         "input": [
             {"role": "system", "content": [{"type": "input_text", "text": "Analiza solo patrones visuales: porcentaje (%), montos/precios y patrón de X a Y entre montos. No uses semántica de palabras."}]},
