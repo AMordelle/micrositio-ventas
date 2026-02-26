@@ -22,6 +22,17 @@ class PageResult:
     error: str | None = None
 
 
+@dataclass
+class FilterScanResult:
+    page: int
+    has_percent: bool
+    has_price: bool
+    has_de_a_pattern: bool
+    should_extract: bool
+    scan_ok: bool
+    scan_error: str | None
+
+
 def parse_skip_pages(value: str | None) -> set[int]:
     if not value:
         return set()
@@ -217,7 +228,7 @@ def build_guardrail_instruction(reasons: list[str]) -> str:
 
 
 
-def call_vision_quick_scan(context: str, page_number: int, image_png_bytes: bytes) -> dict[str, Any]:
+def call_vision_quick_scan(page_number: int, image_png_bytes: bytes) -> dict[str, Any]:
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
         raise RuntimeError("OPENAI_API_KEY no configurado")
@@ -232,8 +243,27 @@ def call_vision_quick_scan(context: str, page_number: int, image_png_bytes: byte
     image_b64 = base64.b64encode(image_png_bytes).decode("utf-8")
     body = {
         "model": MODEL,
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "quick_scan_filter",
+                "strict": True,
+                "schema": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "page": {"type": "integer"},
+                        "has_percent": {"type": "boolean"},
+                        "has_price": {"type": "boolean"},
+                        "has_de_a_pattern": {"type": "boolean"},
+                        "should_extract": {"type": "boolean"},
+                    },
+                    "required": ["page", "has_percent", "has_price", "has_de_a_pattern", "should_extract"],
+                },
+            },
+        },
         "input": [
-            {"role": "system", "content": [{"type": "input_text", "text": context}]},
+            {"role": "system", "content": [{"type": "input_text", "text": "Analiza solo patrones visuales: porcentaje (%), montos/precios y patrón de X a Y entre montos. No uses semántica de palabras."}]},
             {
                 "role": "user",
                 "content": [
@@ -418,6 +448,7 @@ def main() -> None:
     pages_ok = 0
     pages_selected: list[int] = []
     pages_skipped_filter: list[int] = []
+    filter_pages: list[FilterScanResult] = []
 
     with fitz.open(pdf_path) as doc:
         total_pages = len(doc)
@@ -448,6 +479,19 @@ def main() -> None:
         except Exception as exc:  # noqa: BLE001
             error_message = f"render_failed page={page_number} error={exc}"
             print(error_message)
+            if args.only_discount_pages:
+                filter_pages.append(
+                    FilterScanResult(
+                        page=page_number,
+                        has_percent=False,
+                        has_price=False,
+                        has_de_a_pattern=False,
+                        should_extract=False,
+                        scan_ok=False,
+                        scan_error=error_message,
+                    )
+                )
+                pages_skipped_filter.append(page_number)
             pages_error += 1
             fallback = {"page": page_number, "items": []}
             page_file.write_text(json.dumps(fallback, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -455,24 +499,35 @@ def main() -> None:
             continue
 
         if args.only_discount_pages:
+            quick_scan_result = FilterScanResult(
+                page=page_number,
+                has_percent=False,
+                has_price=False,
+                has_de_a_pattern=False,
+                should_extract=False,
+                scan_ok=False,
+                scan_error=None,
+            )
             try:
-                quick_scan = call_vision_quick_scan(context, page_number, image_png)
+                quick_scan = call_vision_quick_scan(page_number, image_png)
+                quick_scan_result.has_percent = quick_scan["has_percent"]
+                quick_scan_result.has_price = quick_scan["has_price"]
+                quick_scan_result.has_de_a_pattern = quick_scan["has_de_a_pattern"]
+                quick_scan_result.should_extract = quick_scan["should_extract"]
+                quick_scan_result.scan_ok = True
                 print(
-                    "page="
-                    f"{page_number} quick_scan should_extract={quick_scan['should_extract']} "
-                    f"percent={quick_scan['has_percent']} price={quick_scan['has_price']} "
-                    f"de_a={quick_scan['has_de_a_pattern']}"
+                    f"filter page={page_number} percent={quick_scan_result.has_percent} "
+                    f"price={quick_scan_result.has_price} de_a={quick_scan_result.has_de_a_pattern} "
+                    f"=> extract={quick_scan_result.should_extract}"
                 )
             except Exception as exc:  # noqa: BLE001
-                error_message = f"vision_failed page={page_number} quick_scan error={exc}"
-                print(error_message)
-                pages_error += 1
-                fallback = {"page": page_number, "items": []}
-                page_file.write_text(json.dumps(fallback, ensure_ascii=False, indent=2), encoding="utf-8")
-                page_results.append(PageResult(page=page_number, items=[], error=error_message))
-                continue
+                quick_scan_result.scan_error = str(exc)
+                quick_scan_result.should_extract = False
+                print(f"filter page={page_number} scan_failed error={exc}")
 
-            if not quick_scan["should_extract"]:
+            filter_pages.append(quick_scan_result)
+
+            if not quick_scan_result.should_extract:
                 pages_skipped_filter.append(page_number)
                 fallback = {"page": page_number, "items": []}
                 page_file.write_text(json.dumps(fallback, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -537,6 +592,18 @@ def main() -> None:
     if args.only_discount_pages:
         filter_report = {
             "total_pages": len(page_results),
+            "pages": [
+                {
+                    "page": fp.page,
+                    "has_percent": fp.has_percent,
+                    "has_price": fp.has_price,
+                    "has_de_a_pattern": fp.has_de_a_pattern,
+                    "should_extract": fp.should_extract,
+                    "scan_ok": fp.scan_ok,
+                    "scan_error": fp.scan_error,
+                }
+                for fp in filter_pages
+            ],
             "pages_selected": pages_selected,
             "pages_skipped": pages_skipped_filter,
         }
