@@ -33,6 +33,12 @@ class FilterScanResult:
     scan_error: str | None
 
 
+class QuickScanInvalidError(RuntimeError):
+    def __init__(self, message: str, raw_content: Any):
+        super().__init__(message)
+        self.raw_content = raw_content
+
+
 def parse_skip_pages(value: str | None) -> set[int]:
     if not value:
         return set()
@@ -228,7 +234,7 @@ def build_guardrail_instruction(reasons: list[str]) -> str:
 
 
 
-def call_vision_quick_scan(page_number: int, image_png_bytes: bytes) -> dict[str, Any]:
+def call_vision_quick_scan(page_number: int, image_png_bytes: bytes) -> tuple[dict[str, Any], Any]:
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
         raise RuntimeError("OPENAI_API_KEY no configurado")
@@ -299,24 +305,44 @@ def call_vision_quick_scan(page_number: int, image_png_bytes: bytes) -> dict[str
         raise RuntimeError("Quick scan no devolvió output_text")
 
     try:
-        payload = json.loads(output_text)
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(f"Quick scan JSON inválido: {exc}") from exc
+        raw_payload = json.loads(output_text)
+        raw_to_save: Any = raw_payload
+    except json.JSONDecodeError:
+        raise QuickScanInvalidError("Quick scan JSON inválido", output_text)
 
-    expected_keys = {"page", "has_percent", "has_price", "has_de_a_pattern", "should_extract"}
-    if not isinstance(payload, dict) or set(payload.keys()) != expected_keys:
-        raise RuntimeError("Quick scan schema inválido")
+    payload: Any = raw_payload
+    if isinstance(payload, dict) and isinstance(payload.get("result"), dict):
+        payload = payload["result"]
+    elif isinstance(payload, list):
+        if not payload or not isinstance(payload[0], dict):
+            raise QuickScanInvalidError("Quick scan estructura inválida: lista sin objeto", raw_to_save)
+        payload = payload[0]
 
-    if payload["page"] != page_number:
-        raise RuntimeError("Quick scan page inválido")
+    if not isinstance(payload, dict):
+        raise QuickScanInvalidError("Quick scan estructura inválida", raw_to_save)
 
-    for key in ("has_percent", "has_price", "has_de_a_pattern", "should_extract"):
-        if not isinstance(payload[key], bool):
-            raise RuntimeError(f"Quick scan campo inválido: {key}")
+    page_value = payload.get("page")
+    normalized_page = page_number
+    if isinstance(page_value, int):
+        normalized_page = page_value
+    elif isinstance(page_value, str) and page_value.strip().isdigit():
+        normalized_page = int(page_value.strip())
 
-    expected_should_extract = payload["has_percent"] and payload["has_price"] and payload["has_de_a_pattern"]
-    payload["should_extract"] = expected_should_extract
-    return payload
+    flags: dict[str, bool] = {}
+    for key in ("has_percent", "has_price", "has_de_a_pattern"):
+        if key not in payload or not isinstance(payload[key], bool):
+            raise QuickScanInvalidError(f"Quick scan campo inválido: {key}", raw_to_save)
+        flags[key] = payload[key]
+
+    should_extract = flags["has_percent"] and flags["has_price"] and flags["has_de_a_pattern"]
+    normalized = {
+        "page": normalized_page,
+        "has_percent": flags["has_percent"],
+        "has_price": flags["has_price"],
+        "has_de_a_pattern": flags["has_de_a_pattern"],
+        "should_extract": should_extract,
+    }
+    return normalized, raw_to_save
 
 def call_vision(
     context: str,
@@ -440,6 +466,9 @@ def main() -> None:
     pages_image_dir = output_dir / "pages"
     if args.save_images:
         pages_image_dir.mkdir(parents=True, exist_ok=True)
+    quick_scan_raw_dir = output_dir / "quick_scan_raw"
+    if args.only_discount_pages:
+        quick_scan_raw_dir.mkdir(parents=True, exist_ok=True)
 
     skip_pages = parse_skip_pages(args.skip_pages)
 
@@ -508,8 +537,13 @@ def main() -> None:
                 scan_ok=False,
                 scan_error=None,
             )
+            quick_scan_raw_file = quick_scan_raw_dir / f"page_{page_number:04d}.json"
             try:
-                quick_scan = call_vision_quick_scan(page_number, image_png)
+                quick_scan, raw_payload = call_vision_quick_scan(page_number, image_png)
+                quick_scan_raw_file.write_text(
+                    json.dumps(raw_payload, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
                 quick_scan_result.has_percent = quick_scan["has_percent"]
                 quick_scan_result.has_price = quick_scan["has_price"]
                 quick_scan_result.has_de_a_pattern = quick_scan["has_de_a_pattern"]
@@ -523,7 +557,16 @@ def main() -> None:
             except Exception as exc:  # noqa: BLE001
                 quick_scan_result.scan_error = str(exc)
                 quick_scan_result.should_extract = False
+                raw_payload = exc.raw_content if isinstance(exc, QuickScanInvalidError) else {"error": str(exc)}
+                quick_scan_raw_file.write_text(
+                    json.dumps(raw_payload, ensure_ascii=False, indent=2) if not isinstance(raw_payload, str) else raw_payload,
+                    encoding="utf-8",
+                )
                 print(f"filter page={page_number} scan_failed error={exc}")
+                print(
+                    f"quick_scan_invalid page={page_number} reason={exc} "
+                    f"raw_saved={quick_scan_raw_file}"
+                )
 
             filter_pages.append(quick_scan_result)
 
