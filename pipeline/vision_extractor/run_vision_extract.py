@@ -593,6 +593,7 @@ def generate_vision_audit(
     cycle: str,
     processed_pages: list[int],
     sku_index_enabled: bool,
+    sku_universe: set[str],
 ) -> dict[str, Any]:
     totals_by_reason: dict[str, int] = {}
     pages_with_issues: list[dict[str, Any]] = []
@@ -787,6 +788,29 @@ def generate_vision_audit(
                         "details": "SKU visible in page but not extracted in items[]",
                     }
                 )
+
+            extra_skus = sorted(extracted_skus.difference(indexed_skus))
+            for extra_sku in extra_skus:
+                if sku_universe and extra_sku not in sku_universe:
+                    page_issues.append(
+                        {
+                            "reason": "sku_not_in_universe",
+                            "sku": extra_sku,
+                            "title": None,
+                            "variant": None,
+                            "details": "SKU not in cycle universe; almost certainly invented",
+                        }
+                    )
+                else:
+                    page_issues.append(
+                        {
+                            "reason": "extra_sku_not_in_index",
+                            "sku": extra_sku,
+                            "title": None,
+                            "variant": None,
+                            "details": "SKU extracted in items[] but not present in sku_index (likely hallucination or grid mixing)",
+                        }
+                    )
 
         if page_issues:
             issue_counts: dict[str, int] = {}
@@ -1043,6 +1067,7 @@ def main() -> None:
             cycle=args.cycle,
             processed_pages=processed_pages,
             sku_index_enabled=not args.skip_sku_index,
+            sku_universe=sku_universe,
         )
         audit_path = output_dir / "vision_audit.json"
         audit_path.write_text(json.dumps(audit_payload, ensure_ascii=False, indent=2), encoding="utf-8")
