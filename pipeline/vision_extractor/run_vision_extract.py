@@ -51,6 +51,30 @@ def parse_skip_pages(value: str | None) -> set[int]:
     return pages
 
 
+
+
+def load_sku_universe(path_value: str) -> set[str]:
+    if not path_value:
+        return set()
+    path = Path(path_value)
+    if not path.exists():
+        raise FileNotFoundError(f"SKU universe no encontrado: {path}")
+
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"SKU universe JSON inválido: {exc}") from exc
+
+    if not isinstance(payload, list):
+        raise ValueError("SKU universe debe ser lista JSON de strings")
+
+    normalized = {
+        normalize_sku_for_audit(str(item))
+        for item in payload
+        if isinstance(item, str) and normalize_sku_for_audit(item)
+    }
+    return {sku for sku in normalized if sku.isdigit()}
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Vision extractor por página de PDF")
     parser.add_argument("--pdf", required=True, help="Ruta al PDF")
@@ -63,6 +87,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--save-images", action="store_true", help="Guardar PNG renderizado de cada página")
     parser.add_argument("--only-discount-pages", action="store_true", help="Filtrar y extraer solo páginas candidatas por criterio visual")
     parser.add_argument("--skip-sku-index", action="store_true", help="Omitir sku_index_scan por página")
+    parser.add_argument("--sku-universe", default="", help="Ruta a JSON con lista de SKUs válidos (whitelist)")
     parser.add_argument("--audit", action=argparse.BooleanOptionalAction, default=True, help="Generar vision_audit.json al finalizar")
     return parser.parse_args()
 
@@ -441,7 +466,7 @@ def call_vision(
     return payload
 
 
-def call_vision_sku_index(image_png_bytes: bytes) -> dict[str, Any]:
+def call_vision_sku_index(image_png_bytes: bytes, sku_universe: set[str] | None = None) -> dict[str, Any]:
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
         raise RuntimeError("OPENAI_API_KEY no configurado")
@@ -453,6 +478,8 @@ def call_vision_sku_index(image_png_bytes: bytes) -> dict[str, Any]:
         "Devuelve SOLO números y quita paréntesis si aparecen impresos como (116404). "
         "Responde SOLO JSON válido con este schema exacto: {\"skus\": [\"116401\", \"116402\"]}."
     )
+    if sku_universe:
+        prompt += " Si se proporciona whitelist, devuelve únicamente SKUs que estén en esa whitelist; omite cualquier otro número."
 
     image_b64 = base64.b64encode(image_png_bytes).decode("utf-8")
     body = {
@@ -535,7 +562,10 @@ def call_vision_sku_index(image_png_bytes: bytes) -> dict[str, Any]:
         if norm.isdigit():
             normalized_skus.append(norm)
 
-    payload["skus"] = sorted(set(normalized_skus))
+    unique_skus = sorted(set(normalized_skus))
+    if sku_universe:
+        unique_skus = [sku for sku in unique_skus if sku in sku_universe]
+    payload["skus"] = unique_skus
     return payload
 
 
@@ -791,6 +821,7 @@ def main() -> None:
 
     context_path = Path(__file__).with_name("vision_context.md")
     context = load_context(context_path)
+    sku_universe = load_sku_universe(args.sku_universe)
 
     output_dir = Path("output") / "vision" / args.catalog / args.cycle
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -919,7 +950,7 @@ def main() -> None:
         if not args.skip_sku_index:
             sku_index_file = sku_index_dir / f"page_{page_number:04d}.json"
             try:
-                sku_index_payload = call_vision_sku_index(image_png)
+                sku_index_payload = call_vision_sku_index(image_png, sku_universe=sku_universe)
                 sku_index_file.write_text(
                     json.dumps(sku_index_payload, ensure_ascii=False, indent=2),
                     encoding="utf-8",
