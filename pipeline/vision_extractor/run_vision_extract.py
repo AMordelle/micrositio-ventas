@@ -595,11 +595,22 @@ def generate_vision_audit(
     sku_index_enabled: bool,
     sku_universe: set[str],
 ) -> dict[str, Any]:
+    filter_report_path = output_dir / "filter_report.json"
+    audit_pages = processed_pages
+    if filter_report_path.exists():
+        try:
+            filter_payload = json.loads(filter_report_path.read_text(encoding="utf-8"))
+            selected_pages = filter_payload.get("pages_selected", []) if isinstance(filter_payload, dict) else []
+            if isinstance(selected_pages, list):
+                audit_pages = sorted({int(page) for page in selected_pages if isinstance(page, int)})
+        except (json.JSONDecodeError, ValueError):
+            audit_pages = processed_pages
+
     totals_by_reason: dict[str, int] = {}
     pages_with_issues: list[dict[str, Any]] = []
     total_items = 0
 
-    for page_number in processed_pages:
+    for page_number in audit_pages:
         page_file = output_dir / f"page_{page_number:04d}.json"
         if not page_file.exists():
             continue
@@ -830,7 +841,7 @@ def generate_vision_audit(
     return {
         "catalog": catalog,
         "cycle": cycle,
-        "total_pages": len(processed_pages),
+        "total_pages": len(audit_pages),
         "total_items": total_items,
         "pages_with_issues": pages_with_issues,
         "totals_by_reason": totals_by_reason,
