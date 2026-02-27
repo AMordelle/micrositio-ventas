@@ -62,6 +62,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--allow-partial", action="store_true", help="Generar by_sku.json aunque haya errores")
     parser.add_argument("--save-images", action="store_true", help="Guardar PNG renderizado de cada página")
     parser.add_argument("--only-discount-pages", action="store_true", help="Filtrar y extraer solo páginas candidatas por criterio visual")
+    parser.add_argument("--skip-sku-index", action="store_true", help="Omitir sku_index_scan por página")
     parser.add_argument("--audit", action=argparse.BooleanOptionalAction, default=True, help="Generar vision_audit.json al finalizar")
     return parser.parse_args()
 
@@ -440,6 +441,104 @@ def call_vision(
     return payload
 
 
+def call_vision_sku_index(image_png_bytes: bytes) -> dict[str, Any]:
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY no configurado")
+
+    prompt = (
+        "Enumera TODOS los SKUs visibles en la página completa. "
+        "No inventes, no infieras, no calcules, no mezcles. "
+        "Si no estás completamente seguro del número, omítelo. "
+        "Devuelve SOLO números y quita paréntesis si aparecen impresos como (116404). "
+        "Responde SOLO JSON válido con este schema exacto: {\"skus\": [\"116401\", \"116402\"]}."
+    )
+
+    image_b64 = base64.b64encode(image_png_bytes).decode("utf-8")
+    body = {
+        "model": MODEL,
+        "text": {
+            "format": {
+                "type": "json_schema",
+                "name": "sku_index_scan",
+                "schema": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "skus": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                        }
+                    },
+                    "required": ["skus"],
+                },
+                "strict": True,
+            }
+        },
+        "input": [
+            {
+                "role": "system",
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": "Extrae únicamente SKUs visibles. No inventes ni infieras.",
+                    }
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": prompt},
+                    {"type": "input_image", "image_url": f"data:image/png;base64,{image_b64}", "detail": "high"},
+                ],
+            },
+        ],
+    }
+
+    req = request.Request(
+        RESPONSES_URL,
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        data=json.dumps(body).encode("utf-8"),
+    )
+
+    try:
+        with request.urlopen(req, timeout=120) as resp:
+            data = resp.read().decode("utf-8")
+    except error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="ignore")
+        raise RuntimeError(f"Error HTTP sku index en Responses API: {exc.code} {detail}") from exc
+    except error.URLError as exc:
+        raise RuntimeError(f"Error de red sku index en Responses API: {exc}") from exc
+
+    response_json = json.loads(data)
+    output_text = extract_response_text(response_json)
+    if not output_text:
+        raise RuntimeError("SKU index no devolvió output_text")
+
+    try:
+        payload = json.loads(output_text)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"SKU index JSON inválido: {exc}") from exc
+
+    if not isinstance(payload, dict) or "skus" not in payload or not isinstance(payload["skus"], list):
+        raise RuntimeError("SKU index schema inválido")
+
+    normalized_skus: list[str] = []
+    for sku in payload["skus"]:
+        if not isinstance(sku, str):
+            continue
+        norm = normalize_sku_for_audit(sku)
+        if norm.isdigit():
+            normalized_skus.append(norm)
+
+    payload["skus"] = sorted(set(normalized_skus))
+    return payload
+
+
 def consolidate_by_sku(page_results: list[PageResult]) -> list[dict[str, Any]]:
     by_sku: dict[str, dict[str, Any]] = {}
     for result in sorted(page_results, key=lambda p: p.page):
@@ -463,6 +562,7 @@ def generate_vision_audit(
     catalog: str,
     cycle: str,
     processed_pages: list[int],
+    sku_index_enabled: bool,
 ) -> dict[str, Any]:
     totals_by_reason: dict[str, int] = {}
     pages_with_issues: list[dict[str, Any]] = []
@@ -478,12 +578,33 @@ def generate_vision_audit(
         except json.JSONDecodeError:
             continue
 
+        sku_index_file = output_dir / "sku_index" / f"page_{page_number:04d}.json"
+        sku_index_data: dict[str, Any] | None = None
+        if sku_index_file.exists():
+            try:
+                parsed_sku_index = json.loads(sku_index_file.read_text(encoding="utf-8"))
+                if isinstance(parsed_sku_index, dict):
+                    sku_index_data = parsed_sku_index
+            except json.JSONDecodeError:
+                sku_index_data = None
+
         items = page_payload.get("items", []) if isinstance(page_payload, dict) else []
         if not isinstance(items, list):
             items = []
 
         total_items += len(items)
         page_issues: list[dict[str, Any]] = []
+
+        if sku_index_enabled and (sku_index_data is None or sku_index_data.get("scan_error")):
+            page_issues.append(
+                {
+                    "reason": "sku_index_failed",
+                    "sku": "",
+                    "title": None,
+                    "variant": None,
+                    "details": "sku index scan failed or unavailable for this page",
+                }
+            )
 
         normalized_items: list[dict[str, Any]] = []
         for item in items:
@@ -614,6 +735,29 @@ def generate_vision_audit(
                 }
             )
 
+        if sku_index_enabled and sku_index_data is not None and not sku_index_data.get("scan_error"):
+            indexed_skus = {
+                normalize_sku_for_audit(sku)
+                for sku in sku_index_data.get("skus", [])
+                if isinstance(sku, str) and normalize_sku_for_audit(sku)
+            }
+            extracted_skus = {
+                entry["sku_normalized"]
+                for entry in normalized_items
+                if entry["sku_normalized"]
+            }
+            missing_skus = sorted(indexed_skus.difference(extracted_skus))
+            for missing_sku in missing_skus:
+                page_issues.append(
+                    {
+                        "reason": "missing_skus_in_extraction",
+                        "sku": missing_sku,
+                        "title": None,
+                        "variant": None,
+                        "details": "SKU visible in page but not extracted in items[]",
+                    }
+                )
+
         if page_issues:
             issue_counts: dict[str, int] = {}
             for issue in page_issues:
@@ -654,8 +798,11 @@ def main() -> None:
     if args.save_images:
         pages_image_dir.mkdir(parents=True, exist_ok=True)
     quick_scan_raw_dir = output_dir / "quick_scan_raw"
+    sku_index_dir = output_dir / "sku_index"
     if args.only_discount_pages:
         quick_scan_raw_dir.mkdir(parents=True, exist_ok=True)
+    if not args.skip_sku_index:
+        sku_index_dir.mkdir(parents=True, exist_ok=True)
 
     skip_pages = parse_skip_pages(args.skip_pages)
 
@@ -769,6 +916,22 @@ def main() -> None:
                 continue
             pages_selected.append(page_number)
 
+        if not args.skip_sku_index:
+            sku_index_file = sku_index_dir / f"page_{page_number:04d}.json"
+            try:
+                sku_index_payload = call_vision_sku_index(image_png)
+                sku_index_file.write_text(
+                    json.dumps(sku_index_payload, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+                print(f"page={page_number} sku_index_ok count={len(sku_index_payload.get('skus', []))}")
+            except Exception as exc:  # noqa: BLE001
+                sku_index_file.write_text(
+                    json.dumps({"page": page_number, "skus": [], "scan_error": str(exc)}, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+                print(f"page={page_number} sku_index_failed error={exc}")
+
         for attempt in range(2):
             try:
                 payload = call_vision(context, page_number, image_png)
@@ -848,6 +1011,7 @@ def main() -> None:
             catalog=args.catalog,
             cycle=args.cycle,
             processed_pages=processed_pages,
+            sku_index_enabled=not args.skip_sku_index,
         )
         audit_path = output_dir / "vision_audit.json"
         audit_path.write_text(json.dumps(audit_payload, ensure_ascii=False, indent=2), encoding="utf-8")

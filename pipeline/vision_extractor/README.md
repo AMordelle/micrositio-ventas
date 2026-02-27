@@ -58,6 +58,16 @@ python pipeline/vision_extractor/run_vision_extract.py \
   --save-images
 ```
 
+### Omitir SKU index scan
+
+```bash
+python pipeline/vision_extractor/run_vision_extract.py \
+  --pdf input_pdfs/natura_c18.pdf \
+  --catalog natura \
+  --cycle c18 \
+  --skip-sku-index
+```
+
 ### Controlar auditoría estructural
 
 ```bash
@@ -85,3 +95,4 @@ python pipeline/vision_extractor/run_vision_extract.py \
 - Consolidado por SKU: `output/vision/<catalog>/<cycle>/by_sku.json` (solo si no hay errores o si se usa `--allow-partial`)
 - Reporte de filtro (con `--only-discount-pages`): `output/vision/<catalog>/<cycle>/filter_report.json`
 - Auditoría estructural Vision (default, desactivar con `--no-audit`): `output/vision/<catalog>/<cycle>/vision_audit.json`
+- SKU index por página (default, desactivar con `--skip-sku-index`): `output/vision/<catalog>/<cycle>/sku_index/page_XXXX.json`
